@@ -1,0 +1,65 @@
+# Admin user
+dn: uid=fawkesfeu,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Fawkes Feu
+sn: Feu
+uid: fawkesfeu
+userPassword: fawkesfeupass
+employeeType: admin
+employeeNumber: ADMIN_01
+
+# Operator 1
+dn: uid=operator1,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Operator One
+sn: One
+uid: operator1
+userPassword: operator1pass
+employeeType: operator
+employeeNumber: OP_01
+
+# Operator 2
+dn: uid=operator2,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Operator Two
+sn: Two
+uid: operator2
+userPassword: operator2pass
+employeeType: operator
+employeeNumber: OP_02
+
+# Personnel 1
+dn: uid=personnel1,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Personnel One
+sn: One
+uid: personnel1
+userPassword: personnel1pass
+employeeType: personnel
+employeeNumber: PER_01
+
+# Personnel 2
+dn: uid=personnel2,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Personnel Two
+sn: Two
+uid: personnel2
+userPassword: personnel2pass
+employeeType: personnel
+employeeNumber: PER_02
+
+# Personnel 3
+dn: uid=personnel3,ou=users,dc=example,dc=com
+objectClass: inetOrgPerson
+objectClass: top
+cn: Personnel Three
+sn: Three
+uid: personnel3
+userPassword: personnel3pass
+employeeType: personnel
+employeeNumber: PER_03 

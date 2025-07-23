@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ldap-deployment
+  namespace: ldap-jwt-app
+  labels:
+    app: ldap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ldap
+  template:
+    metadata:
+      labels:
+        app: ldap
+    spec:
+      containers:
+      - name: ldap
+        image: osixia/openldap:1.5.0
+        ports:
+        - containerPort: 389
+        - containerPort: 636
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+        volumeMounts:
+        - name: ldap-data
+          mountPath: /var/lib/ldap
+        - name: ldap-config
+          mountPath: /etc/ldap/slapd.d
+        - name: ldap-bootstrap
+          mountPath: /container/service/slapd/assets/config/bootstrap/ldif/custom
+        args: ["--copy-service", "--loglevel", "debug"]
+        livenessProbe:
+          exec:
+            command:
+            - ldapsearch
+            - "-x"
+            - "-H"
+            - "ldap://localhost"
+            - "-b"
+            - "dc=example,dc=com"
+            - "-D"
+            - "cn=admin,dc=example,dc=com"
+            - "-w"
+            - "admin"
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 5
+        readinessProbe:
+          exec:
+            command:
+            - ldapsearch
+            - "-x"
+            - "-H"
+            - "ldap://localhost"
+            - "-b"
+            - "dc=example,dc=com"
+            - "-D"
+            - "cn=admin,dc=example,dc=com"
+            - "-w"
+            - "admin"
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: ldap-data
+        persistentVolumeClaim:
+          claimName: ldap-data-pvc
+      - name: ldap-config
+        persistentVolumeClaim:
+          claimName: ldap-config-pvc
+      - name: ldap-bootstrap
+        configMap:
+          name: ldap-bootstrap
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ldap-service
+  namespace: ldap-jwt-app
+  labels:
+    app: ldap
+spec:
+  selector:
+    app: ldap
+  ports:
+  - name: ldap
+    port: 389
+    targetPort: 389
+  - name: ldaps
+    port: 636
+    targetPort: 636
+  type: ClusterIP 

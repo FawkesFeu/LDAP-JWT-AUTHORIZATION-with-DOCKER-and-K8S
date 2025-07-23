@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ldap-jwt-app
+data:
+  # LDAP Configuration
+  LDAP_ORGANISATION: "Example Corp"
+  LDAP_DOMAIN: "example.com"
+  LDAP_BACKEND: "mdb"
+  LDAP_TLS: "true"
+  LDAP_TLS_ENFORCE: "false"
+  LDAP_TLS_CIPHER_SUITE: "SECURE256:-VERS-SSL3.0"
+  LDAP_TLS_VERIFY_CLIENT: "demand"
+  LDAP_REPLICATION: "false"
+  KEEP_EXISTING_CONFIG: "false"
+  LDAP_REMOVE_CONFIG_AFTER_SETUP: "true"
+  LDAP_SSL_HELPER_PREFIX: "ldap"
+  LDAP_READONLY_USER: "false"
+  LDAP_RFC2307BIS_SCHEMA: "false"
+  LDAP_TLS_CRT_FILENAME: "ldap.crt"
+  LDAP_TLS_KEY_FILENAME: "ldap.key"
+  LDAP_TLS_DH_PARAM_FILENAME: "dhparam.pem"
+  LDAP_TLS_CA_CRT_FILENAME: "ca.crt"
+  
+  # Backend Configuration
+  LDAP_SERVER: "ldap://ldap-service:389"
+  LDAP_BASE_DN: "ou=users,dc=example,dc=com"
+  LDAP_ADMIN_DN: "cn=admin,dc=example,dc=com"
+  
+  # Frontend Configuration
+  REACT_APP_BACKEND_URL: "http://backend-service:8000" 

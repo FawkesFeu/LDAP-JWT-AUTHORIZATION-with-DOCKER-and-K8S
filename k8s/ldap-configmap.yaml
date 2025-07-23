@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ldap-bootstrap
+  namespace: ldap-jwt-app
+data:
+  01-organizational-unit.ldif: |
+    # Root entry
+    dn: dc=example,dc=com
+    objectClass: top
+    objectClass: dcObject
+    objectClass: organization
+    o: Example Corp
+    dc: example
+
+    # Users organizational unit
+    dn: ou=users,dc=example,dc=com
+    objectClass: top
+    objectClass: organizationalUnit
+    ou: users
+
+  02-users.ldif: |
+    # Admin user
+    dn: uid=admin,ou=users,dc=example,dc=com
+    objectClass: top
+    objectClass: inetOrgPerson
+    uid: admin
+    cn: Administrator
+    sn: Administrator
+    userPassword: admin123
+    employeeType: admin
+    employeeNumber: ADMIN_01
+
+    # Operator user
+    dn: uid=operator1,ou=users,dc=example,dc=com
+    objectClass: top
+    objectClass: inetOrgPerson
+    uid: operator1
+    cn: Operator One
+    sn: One
+    userPassword: operator123
+    employeeType: operator
+    employeeNumber: OP_01
+
+    # Personnel user
+    dn: uid=user1,ou=users,dc=example,dc=com
+    objectClass: top
+    objectClass: inetOrgPerson
+    uid: user1
+    cn: User One
+    sn: One
+    userPassword: user123
+    employeeType: personnel
+    employeeNumber: PER_01 
