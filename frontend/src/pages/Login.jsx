@@ -2,8 +2,8 @@ import React, { useState } from "react";
 import axios from "axios";
 
 const Login = ({ onLoginSuccess }) => {
-  const [username, setUsername] = useState("fawkesfeu");
-  const [password, setPassword] = useState("36253262fawkesfeu.");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
 
@@ -42,7 +42,8 @@ const Login = ({ onLoginSuccess }) => {
             placeholder="Username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
+            autoComplete="off"
+            name="username"
           />
           <input
             className="w-full p-2 border border-gray-300 rounded"
@@ -50,12 +51,24 @@ const Login = ({ onLoginSuccess }) => {
             placeholder="Password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            autoComplete="current-password"
+            autoComplete="off"
+            name="password"
           />
           <button className="w-full bg-blue-600 text-white py-2 rounded hover:bg-blue-700" type="submit">
             Login
           </button>
         </form>
+        
+        {/* Login hints */}
+        <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm">
+          <p className="font-semibold text-blue-800 mb-2">Test Accounts:</p>
+          <div className="space-y-1 text-blue-700">
+            <p><strong>admin</strong> / admin123 (Admin role)</p>
+            <p><strong>operator1</strong> / operator123 (Operator role)</p>
+            <p><strong>user1</strong> / user123 (Personnel role)</p>
+          </div>
+        </div>
+        
         {result && (
           <div className="mt-4 p-2 border border-green-500 rounded bg-green-100 text-green-800 text-sm">
             <p><strong>{result.message}</strong></p>

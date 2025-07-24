@@ -9,7 +9,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: standard
+  storageClassName: hostpath
   hostPath:
     path: /data/ldap-data
 ---
@@ -24,7 +24,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: standard
+  storageClassName: hostpath
   hostPath:
     path: /data/ldap-config
 ---
@@ -39,7 +39,7 @@ spec:
   resources:
     requests:
       storage: 5Gi
-  storageClassName: standard
+  storageClassName: hostpath
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -52,4 +52,4 @@ spec:
   resources:
     requests:
       storage: 1Gi
-  storageClassName: standard 
+  storageClassName: hostpath 
