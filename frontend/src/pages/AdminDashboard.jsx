@@ -1,0 +1,477 @@
+import React, { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+
+const ROLE_OPTIONS = [
+  { value: "operator", label: "Operator" },
+  { value: "personnel", label: "Personnel" },
+];
+
+const AdminDashboard = () => {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [success, setSuccess] = useState(null);
+  const [roleEdits, setRoleEdits] = useState({});
+  const [pwEdits, setPwEdits] = useState({});
+  const [createUser, setCreateUser] = useState({ username: '', password: '', name: '', role: '' });
+  
+  // New state for filtering and searching
+  const [searchTerm, setSearchTerm] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
+  const [sortBy, setSortBy] = useState('employee_id');
+  const [sortOrder, setSortOrder] = useState('asc');
+  
+  const navigate = useNavigate();
+
+  // Check admin role on mount
+  useEffect(() => {
+    const token = localStorage.getItem("jwe_token");
+    if (!token) {
+      navigate("/login", { replace: true });
+      return;
+    }
+    // Decode JWT to check role (call backend for verification)
+    const formData = new URLSearchParams();
+    formData.append("token", token);
+    fetch("http://localhost:30800/verify-token", {
+      method: "POST",
+      body: formData,
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (!data.valid || data.data.role !== "admin") {
+          navigate("/protected", { replace: true });
+        } else {
+          fetchUsers(token);
+        }
+      })
+      .catch(() => {
+        navigate("/login", { replace: true });
+      });
+    // eslint-disable-next-line
+  }, []);
+
+  const fetchUsers = (token) => {
+    setLoading(true);
+    fetch("http://localhost:30800/admin/users", {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => {
+        if (!res.ok) throw new Error("Not authorized");
+        return res.json();
+      })
+      .then((data) => {
+        setUsers(data.users);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError("Failed to fetch users or not authorized.");
+        setLoading(false);
+      });
+  };
+
+  const handleRoleChange = (uid) => async (e) => {
+    const token = localStorage.getItem("jwe_token");
+    const newRole = roleEdits[uid];
+    if (!newRole) return;
+    const formData = new URLSearchParams();
+    formData.append("username", uid);
+    formData.append("new_role", newRole);
+    const res = await fetch("http://localhost:30800/admin/change-role", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (res.ok) {
+      setSuccess(`Role updated for ${uid}`);
+      fetchUsers(token);
+    } else {
+      setError(`Failed to update role for ${uid}`);
+    }
+  };
+
+  const handlePasswordReset = (uid) => async (e) => {
+    const token = localStorage.getItem("jwe_token");
+    const newPw = pwEdits[uid];
+    if (!newPw) return;
+    const formData = new URLSearchParams();
+    formData.append("username", uid);
+    formData.append("new_password", newPw);
+    const res = await fetch("http://localhost:30800/admin/reset-password", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (res.ok) {
+      setSuccess(`Password reset for ${uid}`);
+    } else {
+      setError(`Failed to reset password for ${uid}`);
+    }
+  };
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setSuccess(null);
+    const token = localStorage.getItem("jwe_token");
+    const formData = new URLSearchParams();
+    formData.append("username", createUser.username);
+    formData.append("password", createUser.password);
+    formData.append("name", createUser.name);
+    formData.append("role", createUser.role);
+    const res = await fetch("http://localhost:30800/admin/create-user", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (res.ok) {
+      setSuccess(`User ${createUser.username} created`);
+      setCreateUser({ username: '', password: '', name: '', role: '' });
+      fetchUsers(token);
+    } else {
+      const data = await res.json();
+      setError(data.detail || `Failed to create user`);
+    }
+  };
+
+  const handleDeleteUser = (uid) => async () => {
+    if (!window.confirm(`Are you sure you want to delete user ${uid}?`)) return;
+    const token = localStorage.getItem("jwe_token");
+    const formData = new URLSearchParams();
+    formData.append("username", uid);
+    const res = await fetch("http://localhost:30800/admin/delete-user", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (res.ok) {
+      setSuccess(`User ${uid} deleted`);
+      fetchUsers(token);
+    } else {
+      const data = await res.json();
+      setError(data.detail || `Failed to delete user`);
+    }
+  };
+
+  const handleGoBack = () => {
+    navigate("/protected");
+  };
+
+  // Filter and search logic
+  const filteredAndSortedUsers = React.useMemo(() => {
+    let filtered = users.filter(user => {
+      const matchesSearch = searchTerm === '' || 
+        user.uid.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        user.cn.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        user.role.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (user.employee_id && user.employee_id.toLowerCase().includes(searchTerm.toLowerCase()));
+      
+      const matchesRole = roleFilter === '' || user.role === roleFilter;
+      
+      return matchesSearch && matchesRole;
+    });
+
+    // Sort the filtered results
+    filtered.sort((a, b) => {
+      let aValue, bValue;
+      
+      switch (sortBy) {
+        case 'employee_id':
+          aValue = (a.employee_id || '').toLowerCase();
+          bValue = (b.employee_id || '').toLowerCase();
+          break;
+        case 'username':
+          aValue = a.uid.toLowerCase();
+          bValue = b.uid.toLowerCase();
+          break;
+        case 'name':
+          aValue = a.cn.toLowerCase();
+          bValue = b.cn.toLowerCase();
+          break;
+        case 'role':
+          aValue = a.role.toLowerCase();
+          bValue = b.role.toLowerCase();
+          break;
+        default:
+          aValue = a.uid.toLowerCase();
+          bValue = b.uid.toLowerCase();
+      }
+      
+      if (sortOrder === 'asc') {
+        return aValue.localeCompare(bValue);
+      } else {
+        return bValue.localeCompare(aValue);
+      }
+    });
+
+    return filtered;
+  }, [users, searchTerm, roleFilter, sortBy, sortOrder]);
+
+  const handleSort = (column) => {
+    if (sortBy === column) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(column);
+      setSortOrder('asc');
+    }
+  };
+
+  const clearFilters = () => {
+    setSearchTerm('');
+    setRoleFilter('');
+    setSortBy('employee_id');
+    setSortOrder('asc');
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-100 flex flex-col items-center py-10">
+      <div className="bg-white p-8 rounded shadow-md w-full max-w-5xl min-w-[700px]">
+        <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">Admin Dashboard</h2>
+        {/* Create User Section */}
+        <form onSubmit={handleCreateUser} className="mb-8 flex flex-nowrap gap-2 items-end overflow-x-auto">
+          <input
+            className="border rounded p-2 min-w-[120px]"
+            placeholder="Username"
+            value={createUser.username}
+            onChange={e => setCreateUser({ ...createUser, username: e.target.value })}
+            required
+          />
+          <input
+            className="border rounded p-2 min-w-[140px]"
+            placeholder="Full Name"
+            value={createUser.name}
+            onChange={e => setCreateUser({ ...createUser, name: e.target.value })}
+            required
+          />
+          <input
+            className="border rounded p-2 min-w-[120px]"
+            placeholder="Password"
+            type="password"
+            value={createUser.password}
+            onChange={e => setCreateUser({ ...createUser, password: e.target.value })}
+            required
+          />
+          <select
+            className="border rounded p-2 min-w-[120px]"
+            value={createUser.role}
+            onChange={e => setCreateUser({ ...createUser, role: e.target.value })}
+            required
+          >
+            <option value="">Select role</option>
+            {ROLE_OPTIONS.map(opt => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <button
+            type="submit"
+            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 whitespace-nowrap"
+          >
+            Create User
+          </button>
+        </form>
+        {/* End Create User Section */}
+        
+        {/* Search and Filter Section */}
+        <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+          <div className="flex flex-wrap gap-4 items-center">
+            <div className="flex-1 min-w-[200px]">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Search Users</label>
+              <input
+                type="text"
+                placeholder="Search by employee ID, username, name, or role..."
+                className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+              />
+            </div>
+            <div className="min-w-[150px]">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Filter by Role</label>
+              <select
+                className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value)}
+              >
+                <option value="">All Roles</option>
+                <option value="admin">Admin</option>
+                {ROLE_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="min-w-[120px]">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Sort By</label>
+              <select
+                className="w-full border rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={sortBy}
+                onChange={(e) => setSortBy(e.target.value)}
+              >
+                <option value="employee_id">Employee ID</option>
+                <option value="username">Username</option>
+                <option value="name">Name</option>
+                <option value="role">Role</option>
+              </select>
+            </div>
+            <div className="flex items-end">
+              <button
+                onClick={clearFilters}
+                className="bg-gray-500 text-white px-4 py-2 rounded-md hover:bg-gray-600 transition-colors"
+              >
+                Clear Filters
+              </button>
+            </div>
+          </div>
+          <div className="mt-2 text-sm text-gray-600">
+            Showing {filteredAndSortedUsers.length} of {users.length} users
+          </div>
+        </div>
+        {/* End Search and Filter Section */}
+        
+        {error && <div className="mb-4 p-2 bg-red-100 text-red-700 rounded">{error}</div>}
+        {success && <div className="mb-4 p-2 bg-green-100 text-green-700 rounded">{success}</div>}
+        {loading ? (
+          <div>Loading users...</div>
+        ) : (
+          <table className="w-full text-sm border">
+            <thead>
+              <tr className="bg-gray-200">
+                <th 
+                  className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
+                  onClick={() => handleSort('employee_id')}
+                >
+                  <div className="flex items-center justify-center gap-1">
+                    Employee ID
+                    {sortBy === 'employee_id' && (
+                      <span className="text-xs">
+                        {sortOrder === 'asc' ? '↑' : '↓'}
+                      </span>
+                    )}
+                  </div>
+                </th>
+                <th 
+                  className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
+                  onClick={() => handleSort('username')}
+                >
+                  <div className="flex items-center justify-center gap-1">
+                    Username
+                    {sortBy === 'username' && (
+                      <span className="text-xs">
+                        {sortOrder === 'asc' ? '↑' : '↓'}
+                      </span>
+                    )}
+                  </div>
+                </th>
+                <th 
+                  className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
+                  onClick={() => handleSort('name')}
+                >
+                  <div className="flex items-center justify-center gap-1">
+                    Name
+                    {sortBy === 'name' && (
+                      <span className="text-xs">
+                        {sortOrder === 'asc' ? '↑' : '↓'}
+                      </span>
+                    )}
+                  </div>
+                </th>
+                <th 
+                  className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
+                  onClick={() => handleSort('role')}
+                >
+                  <div className="flex items-center justify-center gap-1">
+                    Role
+                    {sortBy === 'role' && (
+                      <span className="text-xs">
+                        {sortOrder === 'asc' ? '↑' : '↓'}
+                      </span>
+                    )}
+                  </div>
+                </th>
+                <th className="p-2 border">Change Role</th>
+                <th className="p-2 border">Reset Password</th>
+                <th className="p-2 border">Delete</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredAndSortedUsers.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="p-4 text-center text-gray-500">
+                    {users.length === 0 ? 'No users found' : 'No users match your search criteria'}
+                  </td>
+                </tr>
+              ) : (
+                filteredAndSortedUsers.map((user) => (
+                <tr key={user.uid} className="border-b">
+                  <td className="p-2 border font-mono text-blue-600">{user.employee_id || 'N/A'}</td>
+                  <td className="p-2 border">{user.uid}</td>
+                  <td className="p-2 border">{user.cn}</td>
+                  <td className="p-2 border font-bold">{user.role}</td>
+                  <td className="p-2 border">
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="border rounded p-1"
+                        value={roleEdits[user.uid] || ""}
+                        onChange={(e) => setRoleEdits({ ...roleEdits, [user.uid]: e.target.value })}
+                        disabled={user.role === "admin"}
+                      >
+                        <option value="">Select role</option>
+                        {ROLE_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className="bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700"
+                        onClick={handleRoleChange(user.uid)}
+                        disabled={user.role === "admin"}
+                      >
+                        Update
+                      </button>
+                    </div>
+                  </td>
+                  <td className="p-2 border">
+                    <div className="flex items-center gap-2">
+                      <input
+                        className="border rounded p-1"
+                        placeholder="New password"
+                        type="password"
+                        value={pwEdits[user.uid] || ""}
+                        onChange={(e) => setPwEdits({ ...pwEdits, [user.uid]: e.target.value })}
+                      />
+                      <button
+                        className="bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700"
+                        onClick={handlePasswordReset(user.uid)}
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </td>
+                  <td className="p-2 border text-center">
+                    {user.role !== "admin" && (
+                      <button
+                        className="bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 text-xs whitespace-nowrap transition-all"
+                        style={{ minWidth: 60 }}
+                        onClick={handleDeleteUser(user.uid)}
+                      >
+                        Delete
+                      </button>
+                    )}
+                  </td>
+                </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        )}
+        <button
+          onClick={handleGoBack}
+          className="mt-6 w-full bg-gray-300 text-gray-800 py-2 rounded hover:bg-gray-400 transition"
+        >
+          Go Back
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default AdminDashboard; 
