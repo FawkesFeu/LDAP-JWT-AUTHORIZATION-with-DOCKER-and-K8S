@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getApiBaseUrl } from "../utils/apiConfig";
 
 const TeamView = () => {
   const [user, setUser] = useState(null);
-  const [personnel, setPersonnel] = useState([]);
-  const [operatorCount, setOperatorCount] = useState(null);
+  const [teamData, setTeamData] = useState(null);
+  const [operatorCount, setOperatorCount] = useState(0);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
@@ -18,7 +19,7 @@ const TeamView = () => {
     // Get user info
     const formData = new URLSearchParams();
     formData.append("token", token);
-    fetch("http://localhost:30800/verify-token", {
+    fetch(`${getApiBaseUrl()}/verify-token`, {
       method: "POST",
       body: formData,
     })
@@ -41,7 +42,8 @@ const TeamView = () => {
     setLoading(true);
     setError(null);
     if (user.role === "operator") {
-      fetch("http://localhost:30800/users/for-operator", {
+      // Only fetch personnel list for operator
+      fetch(`${getApiBaseUrl()}/users/for-operator`, {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((res) => {
@@ -49,15 +51,16 @@ const TeamView = () => {
           return res.json();
         })
         .then((data) => {
-          setPersonnel(data.personnel);
+          setTeamData(data);
           setLoading(false);
         })
         .catch(() => {
-          setError("Failed to load personnel list.");
+          setError("Failed to load team data or not authorized.");
           setLoading(false);
         });
     } else if (user.role === "personnel") {
-      fetch("http://localhost:30800/users/operator-count", {
+      // Only fetch operator count for personnel
+      fetch(`${getApiBaseUrl()}/users/operator-count`, {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((res) => {
@@ -65,7 +68,7 @@ const TeamView = () => {
           return res.json();
         })
         .then((data) => {
-          setOperatorCount(data.operator_count);
+          setOperatorCount(data.count);
           setLoading(false);
         })
         .catch(() => {
@@ -73,6 +76,7 @@ const TeamView = () => {
           setLoading(false);
         });
     } else {
+      setError("Unauthorized access.");
       setLoading(false);
     }
   }, [user]);
@@ -98,30 +102,32 @@ const TeamView = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 flex flex-col items-center py-10">
-      <div className="bg-white p-8 rounded shadow-md w-full max-w-2xl min-w-[350px]">
-        <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">Team View</h2>
+    <div className="min-h-screen bg-gray-100 flex flex-col items-center py-4 sm:py-10 p-2">
+      <div className="bg-white p-2 sm:p-8 rounded shadow-md w-full max-w-2xl mx-auto">
+        <h2 className="text-2xl sm:text-3xl font-bold mb-6 text-center text-gray-700">Team View</h2>
         {user && user.role === "operator" && (
           <>
             <h3 className="text-lg font-semibold mb-4 text-gray-700">Personnel List</h3>
-            <table className="w-full text-sm border mb-6">
-              <thead>
-                <tr className="bg-gray-200">
-                  <th className="p-2 border">Employee ID</th>
-                  <th className="p-2 border">Name</th>
-                  <th className="p-2 border">Role</th>
-                </tr>
-              </thead>
-              <tbody>
-                {personnel.map((p) => (
-                  <tr key={p.uid} className="border-b">
-                    <td className="p-2 border font-mono text-blue-600">{p.employee_id || 'N/A'}</td>
-                    <td className="p-2 border">{p.cn}</td>
-                    <td className="p-2 border font-bold">{p.role}</td>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border mb-6">
+                <thead>
+                  <tr className="bg-gray-200">
+                    <th className="p-2 border">Employee ID</th>
+                    <th className="p-2 border">Name</th>
+                    <th className="p-2 border">Role</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {teamData?.personnel?.map((p) => (
+                    <tr key={p.uid} className="border-b">
+                      <td className="p-2 border font-mono text-blue-600">{p.employee_id || 'N/A'}</td>
+                      <td className="p-2 border">{p.cn}</td>
+                      <td className="p-2 border font-bold">{p.role}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </>
         )}
         {user && user.role === "personnel" && (

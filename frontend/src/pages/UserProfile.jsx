@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { getApiBaseUrl } from "../utils/apiConfig";
 
 const UserProfile = () => {
   const [user, setUser] = useState(null);
@@ -17,7 +18,7 @@ const UserProfile = () => {
     // Get session info from JWT
     const formData = new URLSearchParams();
     formData.append("token", token);
-    fetch("http://localhost:30800/verify-token", {
+    fetch(`${getApiBaseUrl()}/verify-token`, {
       method: "POST",
       body: formData,
     })
@@ -40,7 +41,7 @@ const UserProfile = () => {
     const token = localStorage.getItem("jwe_token");
     setLoading(true);
     setError(null);
-    fetch("http://localhost:30800/users/me", {
+    fetch(`${getApiBaseUrl()}/users/me`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())
@@ -75,31 +76,29 @@ const UserProfile = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 flex flex-col items-center py-10">
-      <div className="bg-white p-8 rounded shadow-md w-full max-w-md min-w-[350px]">
-        <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">User Profile</h2>
+    <div className="min-h-screen bg-gray-100 flex flex-col items-center py-4 sm:py-10 p-2">
+      <div className="bg-white p-2 sm:p-8 rounded shadow-md w-full max-w-md mx-auto">
+        <h2 className="text-2xl sm:text-3xl font-bold mb-6 text-center text-gray-700">User Profile</h2>
         <div className="mb-6">
           <h3 className="text-lg font-semibold mb-4 text-gray-700">User Information</h3>
           <div className="space-y-3">
-            <div className="flex justify-between items-center py-2 border-b">
+            <div className="flex flex-col sm:flex-row justify-between items-center py-2 border-b gap-2">
               <span className="font-medium text-gray-600">Employee ID:</span>
               <span className="font-mono text-blue-600 font-semibold">
                 {ldapInfo?.employee_id || 'N/A'}
               </span>
             </div>
-            <div className="flex justify-between items-center py-2 border-b">
+            <div className="flex flex-col sm:flex-row justify-between items-center py-2 border-b gap-2">
               <span className="font-medium text-gray-600">Username:</span>
               <span className="font-mono">{ldapInfo?.uid || user?.sub}</span>
             </div>
-            <div className="flex justify-between items-center py-2 border-b">
+            <div className="flex flex-col sm:flex-row justify-between items-center py-2 border-b gap-2">
               <span className="font-medium text-gray-600">Full Name:</span>
               <span>{ldapInfo?.cn || 'N/A'}</span>
             </div>
-            <div className="flex justify-between items-center py-2 border-b">
+            <div className="flex flex-col sm:flex-row justify-between items-center py-2 border-b gap-2">
               <span className="font-medium text-gray-600">Role:</span>
-              <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded text-sm font-medium">
-                {ldapInfo?.role || user?.role}
-              </span>
+              <span className="capitalize font-semibold">{ldapInfo?.role || user?.role}</span>
             </div>
           </div>
         </div>

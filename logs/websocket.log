@@ -1,0 +1,14 @@
+{"level":"info","message":"Generating self-signed certificate using Node.js...","service":"websocket-server","timestamp":"2025-07-25T06:58:21.490Z"}
+{"level":"info","message":"Self-signed certificate generated successfully","service":"websocket-server","timestamp":"2025-07-25T06:58:22.102Z"}
+{"level":"info","message":"Heartbeat mechanism started","service":"websocket-server","timestamp":"2025-07-25T06:58:22.157Z"}
+{"level":"info","message":"Cleanup mechanism started","service":"websocket-server","timestamp":"2025-07-25T06:58:22.158Z"}
+{"level":"info","message":"Secure WebSocket Server initialized successfully","service":"websocket-server","timestamp":"2025-07-25T06:58:22.158Z"}
+{"level":"info","message":"Secure WebSocket Server listening on https://0.0.0.0:8443","service":"websocket-server","timestamp":"2025-07-25T06:58:22.166Z"}
+{"level":"info","message":"Heartbeat mechanism started","service":"websocket-server","timestamp":"2025-07-25T06:58:41.625Z"}
+{"level":"info","message":"Cleanup mechanism started","service":"websocket-server","timestamp":"2025-07-25T06:58:41.628Z"}
+{"level":"info","message":"Secure WebSocket Server initialized successfully","service":"websocket-server","timestamp":"2025-07-25T06:58:41.628Z"}
+{"address":"0.0.0.0","code":"EADDRINUSE","errno":-4091,"level":"error","message":"WebSocket server error: listen EADDRINUSE: address already in use 0.0.0.0:8443","port":8443,"service":"websocket-server","stack":"Error: listen EADDRINUSE: address already in use 0.0.0.0:8443\n    at Server.setupListenHandle [as _listen2] (node:net:1939:16)\n    at listenInCluster (node:net:1996:12)\n    at node:net:2205:7\n    at process.processTicksAndRejections (node:internal/process/task_queues:90:21)","syscall":"listen","timestamp":"2025-07-25T06:58:41.635Z"}
+{"level":"info","message":"Heartbeat mechanism started","service":"websocket-server","timestamp":"2025-07-25T07:00:50.571Z"}
+{"level":"info","message":"Cleanup mechanism started","service":"websocket-server","timestamp":"2025-07-25T07:00:50.573Z"}
+{"level":"info","message":"Secure WebSocket Server initialized successfully","service":"websocket-server","timestamp":"2025-07-25T07:00:50.574Z"}
+{"level":"info","message":"Secure WebSocket Server listening on https://0.0.0.0:9443","service":"websocket-server","timestamp":"2025-07-25T07:00:50.578Z"}

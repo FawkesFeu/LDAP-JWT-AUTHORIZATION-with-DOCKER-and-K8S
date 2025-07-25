@@ -18,6 +18,7 @@ spec:
       containers:
       - name: frontend
         image: ldap-jwt-frontend:latest
+        imagePullPolicy: Never
         ports:
         - containerPort: 80
         envFrom:

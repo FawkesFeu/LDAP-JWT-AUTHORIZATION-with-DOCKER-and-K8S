@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import tokenManager from "../utils/tokenManager";
+import { getApiBaseUrl } from "../utils/apiConfig";
 
 const Login = ({ onLoginSuccess }) => {
   const [username, setUsername] = useState("");
@@ -32,30 +33,19 @@ const Login = ({ onLoginSuccess }) => {
       const lockedUsername = localStorage.getItem('locked_username');
       if (lockedUsername) {
         try {
-          const response = await axios.get(`http://localhost:30800/lockout-status/${lockedUsername}`);
-          const lockoutData = response.data;
-          
-          if (!lockoutData.user_exists) {
-            // User doesn't exist, clear stored username
-            localStorage.removeItem('locked_username');
-          } else if (lockoutData.is_locked && lockoutData.remaining_lockout_time > 0) {
-            // User is still locked, restore the lockout state
+          const response = await axios.get(`${getApiBaseUrl()}/lockout-status/${lockedUsername}`);
+          if (response.data.is_locked) {
             setUsername(lockedUsername);
             setIsLocked(true);
-            setLockoutCountdown(lockoutData.remaining_lockout_time);
-            setLockoutMessage(`Account locked due to multiple failed attempts. Please wait ${lockoutData.remaining_lockout_time} seconds.`);
-            setRemainingAttempts(null);
-            setError(null);
+            setLockoutCountdown(response.data.remaining_time);
+            setLockoutMessage(`Account locked. Please wait ${response.data.remaining_time} seconds.`);
           } else {
-            // Lockout expired, clear stored username
+            // Lockout has expired, clean up
             localStorage.removeItem('locked_username');
-            if (lockoutData.remaining_attempts !== null) {
-              setRemainingAttempts(lockoutData.remaining_attempts);
-            }
           }
         } catch (error) {
-          console.error('Failed to check lockout status:', error);
-          // If we can't check, clear the stored username
+          console.error('Error checking lockout status:', error);
+          // If there's an error, just clean up and continue
           localStorage.removeItem('locked_username');
         }
       }
@@ -129,7 +119,7 @@ const Login = ({ onLoginSuccess }) => {
       formData.append("username", username);
       formData.append("password", password);
 
-      const response = await axios.post("http://localhost:30800/login", formData, {
+      const response = await axios.post(`${getApiBaseUrl()}/login`, formData, {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
       });
 
@@ -179,13 +169,13 @@ const Login = ({ onLoginSuccess }) => {
   const isButtonDisabled = isLocked || isLoading || lockoutCountdown > 0 || !username.trim() || !password.trim();
 
   return (
-    <div className="flex flex-col items-center justify-center h-screen bg-gray-100">
-      <div className="bg-white p-8 rounded shadow-md w-96">
-        <h2 className="text-2xl font-bold mb-4 text-center text-gray-700">LDAP Login</h2>
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-2">
+      <div className="bg-white p-4 sm:p-8 rounded shadow-md w-full max-w-sm mx-auto">
+        <h2 className="text-2xl sm:text-3xl font-bold mb-4 text-center text-gray-700">LDAP Login</h2>
         
         <form onSubmit={handleLogin} className="space-y-4" autoComplete="off">
           <input
-            className="w-full p-2 border border-gray-300 rounded"
+            className="w-full p-2 border border-gray-300 rounded text-base sm:text-lg"
             placeholder="Username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -195,7 +185,7 @@ const Login = ({ onLoginSuccess }) => {
             disabled={isLocked || lockoutCountdown > 0}
           />
           <input
-            className="w-full p-2 border border-gray-300 rounded"
+            className="w-full p-2 border border-gray-300 rounded text-base sm:text-lg"
             type="password"
             placeholder="Password"
             value={password}

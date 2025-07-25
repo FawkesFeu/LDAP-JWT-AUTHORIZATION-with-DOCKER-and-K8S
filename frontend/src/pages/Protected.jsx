@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import tokenManager from "../utils/tokenManager";
+import { getApiBaseUrl } from "../utils/apiConfig";
 
 const Protected = () => {
   const [user, setUser] = useState(null);
@@ -16,13 +17,13 @@ const Protected = () => {
         setTokenStatus(status);
         
         if (!status.hasTokens) {
-          navigate("/login", { replace: true });
-          return;
-        }
+      navigate("/login", { replace: true });
+      return;
+    }
 
         // If tokens exist but are expired, try to refresh
         if (status.isExpired) {
-          try {
+      try {
             await tokenManager.refreshAccessToken();
           } catch (refreshError) {
             console.error('Token refresh failed:', refreshError);
@@ -60,7 +61,7 @@ const Protected = () => {
       const formData = new URLSearchParams();
       formData.append("token", tokenManager.getAccessToken());
       
-      const response = await fetch("http://localhost:30800/verify-token", {
+      const response = await fetch(`${getApiBaseUrl()}/verify-token`, {
         method: "POST",
         body: formData,
       });
@@ -107,7 +108,7 @@ const Protected = () => {
     } catch (error) {
       console.error('Logout all failed:', error);
       // Still navigate to login even if logout request fails
-      navigate("/login", { replace: true });
+    navigate("/login", { replace: true });
     }
   };
 
@@ -164,27 +165,27 @@ const Protected = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      <div className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-6">
+    <div className="min-h-screen bg-gray-100 p-2">
+      <div className="bg-white shadow w-full max-w-2xl mx-auto rounded">
+        <div className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-8">
+          <div className="flex flex-col sm:flex-row justify-between items-center py-4 sm:py-6 gap-2 sm:gap-0">
             <div className="flex items-center">
-              <h1 className="text-3xl font-bold text-gray-900">Protected Dashboard</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Protected Dashboard</h1>
             </div>
-            <div className="flex items-center space-x-4">
+            <div className="flex flex-col sm:flex-row items-center space-y-2 sm:space-y-0 sm:space-x-4">
               <div className="text-sm text-gray-600">
                 Welcome, <span className="font-semibold">{user.sub}</span>
               </div>
-              <div className="flex space-x-2">
+              <div className="flex space-x-2 w-full sm:w-auto">
                 <button
                   onClick={handleLogout}
-                  className="bg-red-600 text-white px-4 py-2 rounded text-sm hover:bg-red-700 transition-colors"
+                  className="bg-red-600 text-white px-4 py-2 rounded text-sm hover:bg-red-700 transition-colors w-full sm:w-auto"
                 >
                   Logout
                 </button>
                 <button
                   onClick={handleLogoutAll}
-                  className="bg-red-700 text-white px-4 py-2 rounded text-sm hover:bg-red-800 transition-colors"
+                  className="bg-red-700 text-white px-4 py-2 rounded text-sm hover:bg-red-800 transition-colors w-full sm:w-auto"
                   title="Logout from all devices"
                 >
                   Logout All
@@ -195,7 +196,7 @@ const Protected = () => {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+      <div className="max-w-7xl mx-auto py-4 sm:py-6 px-2 sm:px-6 lg:px-8">
         {/* Token Status Panel */}
         {tokenStatus && (
           <div className="bg-white overflow-hidden shadow rounded-lg mb-6">
@@ -259,7 +260,7 @@ const Protected = () => {
 
         {/* Navigation Options */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {user.role === "admin" && (
+        {user.role === "admin" && (
             <div className="bg-white overflow-hidden shadow rounded-lg">
               <div className="px-4 py-5 sm:p-6">
                 <div className="flex items-center">
@@ -278,16 +279,16 @@ const Protected = () => {
                   </div>
                 </div>
                 <div className="mt-5">
-                  <button
-                    onClick={handleAdminDashboard}
+          <button
+            onClick={handleAdminDashboard}
                     className="w-full bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700 transition-colors"
-                  >
+          >
                     Access Admin Panel
-                  </button>
+          </button>
                 </div>
               </div>
             </div>
-          )}
+        )}
 
           {user.role === "operator" && (
             <div className="bg-white overflow-hidden shadow rounded-lg">
@@ -308,12 +309,12 @@ const Protected = () => {
                   </div>
                 </div>
                 <div className="mt-5">
-                  <button
+          <button
                     onClick={handleTeamView}
                     className="w-full bg-yellow-600 text-white px-4 py-2 rounded hover:bg-yellow-700 transition-colors"
-                  >
+          >
                     View Team
-                  </button>
+          </button>
                 </div>
               </div>
             </div>
@@ -337,12 +338,12 @@ const Protected = () => {
                 </div>
               </div>
               <div className="mt-5">
-                <button
+        <button
                   onClick={handleUserProfile}
                   className="w-full bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition-colors"
-                >
+        >
                   View Profile
-                </button>
+        </button>
               </div>
             </div>
           </div>

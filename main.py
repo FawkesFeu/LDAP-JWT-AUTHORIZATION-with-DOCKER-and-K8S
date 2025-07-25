@@ -237,7 +237,7 @@ def user_exists_in_ldap(username: str) -> bool:
 # Enable CORS for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:30080", "http://localhost:3000"],
+    allow_origins=["*"],  # Allow all origins for development/tunneling
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

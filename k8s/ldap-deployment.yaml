@@ -15,6 +15,115 @@ spec:
       labels:
         app: ldap
     spec:
+      initContainers:
+      - name: ldap-init
+        image: osixia/openldap:1.5.0
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            echo "🚀 Starting LDAP initialization..."
+            
+            # Set environment variables
+            export LDAP_ORGANISATION="Example Corp"
+            export LDAP_DOMAIN="example.com"
+            export LDAP_ADMIN_PASSWORD="admin"
+            export LDAP_CONFIG_PASSWORD="config"
+            export LDAP_READONLY_USER="false"
+            export LDAP_BASE_DN="dc=example,dc=com"
+            
+            # Start LDAP server in background for setup
+            /container/tool/run --copy-service &
+            LDAP_PID=$!
+            
+            # Wait for LDAP to be ready
+            echo "⏳ Waiting for LDAP server to start..."
+            for i in {1..30}; do
+              if ldapsearch -x -H ldap://localhost -D "cn=admin,dc=example,dc=com" -w admin -b "dc=example,dc=com" "(objectClass=*)" >/dev/null 2>&1; then
+                echo "✅ LDAP server is ready!"
+                break
+              fi
+              echo "  Attempt $i/30 - waiting..."
+              sleep 2
+            done
+            
+            # Check if users exist
+            echo "🔍 Checking if users exist..."
+            if ldapsearch -x -H ldap://localhost -D "cn=admin,dc=example,dc=com" -w admin -b "ou=users,dc=example,dc=com" "(uid=admin)" | grep -q "numEntries: 1"; then
+              echo "✅ Users already exist, skipping initialization"
+            else
+              echo "📝 Users not found, adding them..."
+              
+              # Add users OU if it doesn't exist
+              if ! ldapsearch -x -H ldap://localhost -D "cn=admin,dc=example,dc=com" -w admin -b "ou=users,dc=example,dc=com" "(objectClass=*)" | grep -q "numEntries: 1"; then
+                echo "Adding users organizational unit..."
+                ldapadd -x -H ldap://localhost -D "cn=admin,dc=example,dc=com" -w admin << 'EOF'
+            dn: ou=users,dc=example,dc=com
+            objectClass: top
+            objectClass: organizationalUnit
+            ou: users
+            EOF
+              fi
+              
+              # Add admin user
+              echo "Adding admin user..."
+              ldapadd -x -H ldap://localhost -D "cn=admin,dc=example,dc=com" -w admin << 'EOF'
+            dn: uid=admin,ou=users,dc=example,dc=com
+            objectClass: top
+            objectClass: inetOrgPerson
+            uid: admin
+            cn: Administrator
+            sn: Administrator
+            userPassword: admin123
+            employeeType: admin
+            employeeNumber: ADMIN_01
+            EOF
+              
+              # Add operator user
+              echo "Adding operator user..."
+              ldapadd -x -H ldap://localhost -D "cn=admin,dc=example,dc=com" -w admin << 'EOF'
+            dn: uid=operator1,ou=users,dc=example,dc=com
+            objectClass: top
+            objectClass: inetOrgPerson
+            uid: operator1
+            cn: Operator One
+            sn: One
+            userPassword: operator123
+            employeeType: operator
+            employeeNumber: OP_01
+            EOF
+              
+              # Add personnel user
+              echo "Adding personnel user..."
+              ldapadd -x -H ldap://localhost -D "cn=admin,dc=example,dc=com" -w admin << 'EOF'
+            dn: uid=user1,ou=users,dc=example,dc=com
+            objectClass: top
+            objectClass: inetOrgPerson
+            uid: user1
+            cn: User One
+            sn: One
+            userPassword: user123
+            employeeType: personnel
+            employeeNumber: PER_01
+            EOF
+              
+              echo "🎉 User initialization complete!"
+            fi
+            
+            # Stop the background LDAP server
+            kill $LDAP_PID
+            wait $LDAP_PID 2>/dev/null
+            
+            echo "✅ LDAP initialization finished!"
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+        volumeMounts:
+        - name: ldap-data
+          mountPath: /var/lib/ldap
+        - name: ldap-config
+          mountPath: /etc/ldap/slapd.d
       containers:
       - name: ldap
         image: osixia/openldap:1.5.0
@@ -31,9 +140,7 @@ spec:
           mountPath: /var/lib/ldap
         - name: ldap-config
           mountPath: /etc/ldap/slapd.d
-        - name: ldap-bootstrap
-          mountPath: /container/service/slapd/assets/config/bootstrap/ldif/custom
-        args: ["--copy-service", "--loglevel", "debug"]
+        args: ["--copy-service", "--loglevel", "info"]
         livenessProbe:
           exec:
             command:
@@ -58,13 +165,14 @@ spec:
             - "-x"
             - "-H"
             - "ldap://localhost"
-            - "-b"
-            - "dc=example,dc=com"
             - "-D"
             - "cn=admin,dc=example,dc=com"
             - "-w"
             - "admin"
-          initialDelaySeconds: 30
+            - "-b"
+            - "ou=users,dc=example,dc=com"
+            - "(uid=admin)"
+          initialDelaySeconds: 15
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3
@@ -75,9 +183,6 @@ spec:
       - name: ldap-config
         persistentVolumeClaim:
           claimName: ldap-config-pvc
-      - name: ldap-bootstrap
-        configMap:
-          name: ldap-bootstrap
 ---
 apiVersion: v1
 kind: Service

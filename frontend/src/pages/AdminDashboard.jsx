@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import tokenManager from "../utils/tokenManager";
+import { getApiBaseUrl } from "../utils/apiConfig";
 
 const ROLE_OPTIONS = [
   { value: "operator", label: "Operator" },
@@ -25,7 +27,7 @@ const AdminDashboard = () => {
 
   // Check admin role on mount
   useEffect(() => {
-    const token = localStorage.getItem("jwe_token");
+    const token = tokenManager.getAccessToken();
     if (!token) {
       navigate("/login", { replace: true });
       return;
@@ -33,9 +35,10 @@ const AdminDashboard = () => {
     // Decode JWT to check role (call backend for verification)
     const formData = new URLSearchParams();
     formData.append("token", token);
-    fetch("http://localhost:30800/verify-token", {
+    fetch(`${getApiBaseUrl()}/verify-token`, {
       method: "POST",
       body: formData,
+      headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => res.json())
       .then((data) => {
@@ -53,7 +56,7 @@ const AdminDashboard = () => {
 
   const fetchUsers = (token) => {
     setLoading(true);
-    fetch("http://localhost:30800/admin/users", {
+    fetch(`${getApiBaseUrl()}/admin/users`, {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => {
@@ -71,13 +74,13 @@ const AdminDashboard = () => {
   };
 
   const handleRoleChange = (uid) => async (e) => {
-    const token = localStorage.getItem("jwe_token");
+    const token = tokenManager.getAccessToken();
     const newRole = roleEdits[uid];
     if (!newRole) return;
     const formData = new URLSearchParams();
     formData.append("username", uid);
     formData.append("new_role", newRole);
-    const res = await fetch("http://localhost:30800/admin/change-role", {
+    const res = await fetch(`${getApiBaseUrl()}/admin/change-role`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: formData,
@@ -91,13 +94,13 @@ const AdminDashboard = () => {
   };
 
   const handlePasswordReset = (uid) => async (e) => {
-    const token = localStorage.getItem("jwe_token");
+    const token = tokenManager.getAccessToken();
     const newPw = pwEdits[uid];
     if (!newPw) return;
     const formData = new URLSearchParams();
     formData.append("username", uid);
     formData.append("new_password", newPw);
-    const res = await fetch("http://localhost:30800/admin/reset-password", {
+    const res = await fetch(`${getApiBaseUrl()}/admin/reset-password`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: formData,
@@ -113,33 +116,57 @@ const AdminDashboard = () => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
-    const token = localStorage.getItem("jwe_token");
+    
+    const token = tokenManager.getAccessToken();
+    if (!token) {
+      setError("No authentication token found");
+      return;
+    }
+    
+    console.log("Creating user with token:", token.substring(0, 20) + "...");
+    console.log("User data:", createUser);
+    
     const formData = new URLSearchParams();
     formData.append("username", createUser.username);
     formData.append("password", createUser.password);
-    formData.append("name", createUser.name);
+    formData.append("name", createUser.name); // <-- fix here
     formData.append("role", createUser.role);
-    const res = await fetch("http://localhost:30800/admin/create-user", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
-    });
-    if (res.ok) {
-      setSuccess(`User ${createUser.username} created`);
-      setCreateUser({ username: '', password: '', name: '', role: '' });
-      fetchUsers(token);
-    } else {
-      const data = await res.json();
-      setError(data.detail || `Failed to create user`);
+    
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/admin/create-user`, {
+        method: "POST",
+        headers: { 
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: formData,
+      });
+      
+      console.log("Response status:", res.status);
+      
+      if (res.ok) {
+        const responseData = await res.json();
+        console.log("User created successfully:", responseData);
+        setSuccess(`User ${createUser.username} created successfully`);
+        setCreateUser({ username: '', password: '', name: '', role: '' });
+        fetchUsers(token);
+      } else {
+        const errorData = await res.json();
+        console.error("Error creating user:", errorData);
+        setError(errorData.detail || `Failed to create user (${res.status})`);
+      }
+    } catch (error) {
+      console.error("Network error:", error);
+      setError(`Network error: ${error.message}`);
     }
   };
 
   const handleDeleteUser = (uid) => async () => {
     if (!window.confirm(`Are you sure you want to delete user ${uid}?`)) return;
-    const token = localStorage.getItem("jwe_token");
+    const token = tokenManager.getAccessToken();
     const formData = new URLSearchParams();
     formData.append("username", uid);
-    const res = await fetch("http://localhost:30800/admin/delete-user", {
+    const res = await fetch(`${getApiBaseUrl()}/admin/delete-user`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
       body: formData,
@@ -224,9 +251,9 @@ const AdminDashboard = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 flex flex-col items-center py-10">
-      <div className="bg-white p-8 rounded shadow-md w-full max-w-5xl min-w-[700px]">
-        <h2 className="text-2xl font-bold mb-6 text-center text-gray-700">Admin Dashboard</h2>
+    <div className="min-h-screen bg-gray-100 p-2">
+      <div className="bg-white p-2 sm:p-6 rounded shadow-md w-full max-w-3xl mx-auto">
+        <h2 className="text-2xl sm:text-3xl font-bold mb-4 text-center text-gray-700">Admin Dashboard</h2>
         {/* Create User Section */}
         <form onSubmit={handleCreateUser} className="mb-8 flex flex-nowrap gap-2 items-end overflow-x-auto">
           <input
@@ -331,137 +358,139 @@ const AdminDashboard = () => {
         {loading ? (
           <div>Loading users...</div>
         ) : (
-          <table className="w-full text-sm border">
-            <thead>
-              <tr className="bg-gray-200">
-                <th 
-                  className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
-                  onClick={() => handleSort('employee_id')}
-                >
-                  <div className="flex items-center justify-center gap-1">
-                    Employee ID
-                    {sortBy === 'employee_id' && (
-                      <span className="text-xs">
-                        {sortOrder === 'asc' ? '↑' : '↓'}
-                      </span>
-                    )}
-                  </div>
-                </th>
-                <th 
-                  className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
-                  onClick={() => handleSort('username')}
-                >
-                  <div className="flex items-center justify-center gap-1">
-                    Username
-                    {sortBy === 'username' && (
-                      <span className="text-xs">
-                        {sortOrder === 'asc' ? '↑' : '↓'}
-                      </span>
-                    )}
-                  </div>
-                </th>
-                <th 
-                  className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
-                  onClick={() => handleSort('name')}
-                >
-                  <div className="flex items-center justify-center gap-1">
-                    Name
-                    {sortBy === 'name' && (
-                      <span className="text-xs">
-                        {sortOrder === 'asc' ? '↑' : '↓'}
-                      </span>
-                    )}
-                  </div>
-                </th>
-                <th 
-                  className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
-                  onClick={() => handleSort('role')}
-                >
-                  <div className="flex items-center justify-center gap-1">
-                    Role
-                    {sortBy === 'role' && (
-                      <span className="text-xs">
-                        {sortOrder === 'asc' ? '↑' : '↓'}
-                      </span>
-                    )}
-                  </div>
-                </th>
-                <th className="p-2 border">Change Role</th>
-                <th className="p-2 border">Reset Password</th>
-                <th className="p-2 border">Delete</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filteredAndSortedUsers.length === 0 ? (
-                <tr>
-                  <td colSpan="7" className="p-4 text-center text-gray-500">
-                    {users.length === 0 ? 'No users found' : 'No users match your search criteria'}
-                  </td>
-                </tr>
-              ) : (
-                filteredAndSortedUsers.map((user) => (
-                <tr key={user.uid} className="border-b">
-                  <td className="p-2 border font-mono text-blue-600">{user.employee_id || 'N/A'}</td>
-                  <td className="p-2 border">{user.uid}</td>
-                  <td className="p-2 border">{user.cn}</td>
-                  <td className="p-2 border font-bold">{user.role}</td>
-                  <td className="p-2 border">
-                    <div className="flex items-center gap-2">
-                      <select
-                        className="border rounded p-1"
-                        value={roleEdits[user.uid] || ""}
-                        onChange={(e) => setRoleEdits({ ...roleEdits, [user.uid]: e.target.value })}
-                        disabled={user.role === "admin"}
-                      >
-                        <option value="">Select role</option>
-                        {ROLE_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                      <button
-                        className="bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700"
-                        onClick={handleRoleChange(user.uid)}
-                        disabled={user.role === "admin"}
-                      >
-                        Update
-                      </button>
+          <div className="overflow-x-auto w-full">
+            <table className="w-full text-sm border bg-white">
+              <thead>
+                <tr className="bg-gray-200">
+                  <th 
+                    className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
+                    onClick={() => handleSort('employee_id')}
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      Employee ID
+                      {sortBy === 'employee_id' && (
+                        <span className="text-xs">
+                          {sortOrder === 'asc' ? '↑' : '↓'}
+                        </span>
+                      )}
                     </div>
-                  </td>
-                  <td className="p-2 border">
-                    <div className="flex items-center gap-2">
-                      <input
-                        className="border rounded p-1"
-                        placeholder="New password"
-                        type="password"
-                        value={pwEdits[user.uid] || ""}
-                        onChange={(e) => setPwEdits({ ...pwEdits, [user.uid]: e.target.value })}
-                      />
-                      <button
-                        className="bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700"
-                        onClick={handlePasswordReset(user.uid)}
-                      >
-                        Reset
-                      </button>
+                  </th>
+                  <th 
+                    className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
+                    onClick={() => handleSort('username')}
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      Username
+                      {sortBy === 'username' && (
+                        <span className="text-xs">
+                          {sortOrder === 'asc' ? '↑' : '↓'}
+                        </span>
+                      )}
                     </div>
-                  </td>
-                  <td className="p-2 border text-center">
-                    {user.role !== "admin" && (
-                      <button
-                        className="bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 text-xs whitespace-nowrap transition-all"
-                        style={{ minWidth: 60 }}
-                        onClick={handleDeleteUser(user.uid)}
-                      >
-                        Delete
-                      </button>
-                    )}
-                  </td>
+                  </th>
+                  <th 
+                    className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
+                    onClick={() => handleSort('name')}
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      Name
+                      {sortBy === 'name' && (
+                        <span className="text-xs">
+                          {sortOrder === 'asc' ? '↑' : '↓'}
+                        </span>
+                      )}
+                    </div>
+                  </th>
+                  <th 
+                    className="p-2 border cursor-pointer hover:bg-gray-300 transition-colors"
+                    onClick={() => handleSort('role')}
+                  >
+                    <div className="flex items-center justify-center gap-1">
+                      Role
+                      {sortBy === 'role' && (
+                        <span className="text-xs">
+                          {sortOrder === 'asc' ? '↑' : '↓'}
+                        </span>
+                      )}
+                    </div>
+                  </th>
+                  <th className="p-2 border">Change Role</th>
+                  <th className="p-2 border">Reset Password</th>
+                  <th className="p-2 border">Delete</th>
                 </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {filteredAndSortedUsers.length === 0 ? (
+                  <tr>
+                    <td colSpan="7" className="p-4 text-center text-gray-500">
+                      {users.length === 0 ? 'No users found' : 'No users match your search criteria'}
+                    </td>
+                  </tr>
+                ) : (
+                  filteredAndSortedUsers.map((user) => (
+                  <tr key={user.uid} className="border-b">
+                    <td className="p-2 border font-mono text-blue-600">{user.employee_id || 'N/A'}</td>
+                    <td className="p-2 border">{user.uid}</td>
+                    <td className="p-2 border">{user.cn}</td>
+                    <td className="p-2 border font-bold">{user.role}</td>
+                    <td className="p-2 border">
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="border rounded p-1"
+                          value={roleEdits[user.uid] || ""}
+                          onChange={(e) => setRoleEdits({ ...roleEdits, [user.uid]: e.target.value })}
+                          disabled={user.role === "admin"}
+                        >
+                          <option value="">Select role</option>
+                          {ROLE_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          className="bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700"
+                          onClick={handleRoleChange(user.uid)}
+                          disabled={user.role === "admin"}
+                        >
+                          Update
+                        </button>
+                      </div>
+                    </td>
+                    <td className="p-2 border">
+                      <div className="flex items-center gap-2">
+                        <input
+                          className="border rounded p-1"
+                          placeholder="New password"
+                          type="password"
+                          value={pwEdits[user.uid] || ""}
+                          onChange={(e) => setPwEdits({ ...pwEdits, [user.uid]: e.target.value })}
+                        />
+                        <button
+                          className="bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700"
+                          onClick={handlePasswordReset(user.uid)}
+                        >
+                          Reset
+                        </button>
+                      </div>
+                    </td>
+                    <td className="p-2 border text-center">
+                      {user.role !== "admin" && (
+                        <button
+                          className="bg-red-600 text-white px-3 py-1 rounded hover:bg-red-700 text-xs whitespace-nowrap transition-all"
+                          style={{ minWidth: 60 }}
+                          onClick={handleDeleteUser(user.uid)}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
         <button
           onClick={handleGoBack}

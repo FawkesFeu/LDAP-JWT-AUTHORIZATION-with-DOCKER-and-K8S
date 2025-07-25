@@ -1,6 +1,5 @@
 import axios from 'axios';
-
-const API_BASE_URL = 'http://localhost:30800';
+import { getApiBaseUrl } from './apiConfig';
 
 class TokenManager {
   constructor() {
@@ -129,7 +128,7 @@ class TokenManager {
       const formData = new URLSearchParams();
       formData.append('refresh_token', this.refreshToken);
 
-      const response = await axios.post(`${API_BASE_URL}/refresh`, formData, {
+      const response = await axios.post(`${getApiBaseUrl()}/refresh`, formData, {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
 
@@ -239,7 +238,7 @@ class TokenManager {
         const formData = new URLSearchParams();
         formData.append('refresh_token', this.refreshToken);
         
-        await axios.post(`${API_BASE_URL}/logout`, formData, {
+        await axios.post(`${getApiBaseUrl()}/logout`, formData, {
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
       }
@@ -253,7 +252,7 @@ class TokenManager {
   // Logout from all devices
   async logoutAll() {
     try {
-      await axios.post(`${API_BASE_URL}/logout-all`);
+      await axios.post(`${getApiBaseUrl()}/logout-all`);
     } catch (error) {
       console.error('Logout all request failed:', error);
     } finally {
