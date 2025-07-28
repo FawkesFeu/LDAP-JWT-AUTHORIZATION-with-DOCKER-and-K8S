@@ -27,26 +27,107 @@ const Login = ({ onLoginSuccess }) => {
     checkExistingLogin();
   }, [onLoginSuccess]);
 
+  // Prevent page refresh/navigation during lockout
+  useEffect(() => {
+    const handleBeforeUnload = (e) => {
+      if (isLocked && lockoutCountdown > 0) {
+        e.preventDefault();
+        e.returnValue = "Your account is temporarily locked. Please wait for the lockout to expire.";
+        return "Your account is temporarily locked. Please wait for the lockout to expire.";
+      }
+    };
+
+    const handlePopState = (e) => {
+      if (isLocked && lockoutCountdown > 0) {
+        e.preventDefault();
+        window.history.pushState(null, '', window.location.href);
+        return false;
+      }
+    };
+
+    const handleKeyDown = (e) => {
+      if (isLocked && lockoutCountdown > 0) {
+        // Prevent common refresh/navigation shortcuts
+        if (
+          (e.ctrlKey && (e.key === 'r' || e.key === 'R')) || // Ctrl+R
+          (e.ctrlKey && e.shiftKey && (e.key === 'r' || e.key === 'R')) || // Ctrl+Shift+R
+          e.key === 'F5' || // F5
+          (e.ctrlKey && (e.key === 'l' || e.key === 'L')) || // Ctrl+L
+          (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) || // Alt+Arrow (back/forward)
+          (e.ctrlKey && (e.key === 'w' || e.key === 'W')) || // Ctrl+W (close tab)
+          (e.ctrlKey && (e.key === 't' || e.key === 'T')) || // Ctrl+T (new tab)
+          (e.ctrlKey && e.shiftKey && (e.key === 't' || e.key === 'T')) // Ctrl+Shift+T (reopen tab)
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          return false;
+        }
+      }
+    };
+
+    if (isLocked && lockoutCountdown > 0) {
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      window.addEventListener('popstate', handlePopState);
+      window.addEventListener('keydown', handleKeyDown, true);
+      // Prevent back navigation
+      window.history.pushState(null, '', window.location.href);
+      
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+        window.removeEventListener('popstate', handlePopState);
+        window.removeEventListener('keydown', handleKeyDown, true);
+      };
+    }
+  }, [isLocked, lockoutCountdown]);
+
   // Check for existing lockout status on page load
   useEffect(() => {
     const checkLockoutStatus = async () => {
       const lockedUsername = localStorage.getItem('locked_username');
-      if (lockedUsername) {
+      const lockoutEndTime = localStorage.getItem('lockout_end_time');
+      
+      if (lockedUsername && lockoutEndTime) {
+        const endTime = parseInt(lockoutEndTime);
+        const now = Date.now();
+        const remainingMs = endTime - now;
+        
+        if (remainingMs > 0) {
+          // Lockout is still active
+          const remainingSeconds = Math.ceil(remainingMs / 1000);
+          setUsername(lockedUsername);
+          setIsLocked(true);
+          setLockoutCountdown(remainingSeconds);
+          setLockoutMessage(`Account locked. Please wait ${remainingSeconds} seconds.`);
+        } else {
+          // Lockout has expired, clean up
+          localStorage.removeItem('locked_username');
+          localStorage.removeItem('lockout_end_time');
+        }
+      } else if (lockedUsername) {
+        // Fallback: check with server if we only have username
         try {
           const response = await axios.get(`${getApiBaseUrl()}/lockout-status/${lockedUsername}`);
           if (response.data.is_locked) {
+            const remainingTime = response.data.remaining_time;
+            const endTime = Date.now() + (remainingTime * 1000);
+            
             setUsername(lockedUsername);
             setIsLocked(true);
-            setLockoutCountdown(response.data.remaining_time);
-            setLockoutMessage(`Account locked. Please wait ${response.data.remaining_time} seconds.`);
+            setLockoutCountdown(remainingTime);
+            setLockoutMessage(`Account locked. Please wait ${remainingTime} seconds.`);
+            
+            // Store the end time for future reference
+            localStorage.setItem('lockout_end_time', endTime.toString());
           } else {
             // Lockout has expired, clean up
             localStorage.removeItem('locked_username');
+            localStorage.removeItem('lockout_end_time');
           }
         } catch (error) {
           console.error('Error checking lockout status:', error);
           // If there's an error, just clean up and continue
           localStorage.removeItem('locked_username');
+          localStorage.removeItem('lockout_end_time');
         }
       }
     };
@@ -64,8 +145,9 @@ const Login = ({ onLoginSuccess }) => {
             setIsLocked(false);
             setLockoutMessage("");
             setError(null);
-            // Clear stored username when lockout expires
+            // Clear stored data when lockout expires
             localStorage.removeItem('locked_username');
+            localStorage.removeItem('lockout_end_time');
             return 0;
           }
           return prev - 1;
@@ -90,8 +172,10 @@ const Login = ({ onLoginSuccess }) => {
       const timeMatch = errorMessage.match(/(\d+) seconds/);
       const remainingTime = timeMatch ? parseInt(timeMatch[1]) : 30;
       
-      // Store the locked username for persistence across page refreshes
+      // Store the locked username and end time for persistence across page refreshes
+      const endTime = Date.now() + (remainingTime * 1000);
       localStorage.setItem('locked_username', username);
+      localStorage.setItem('lockout_end_time', endTime.toString());
       
       setIsLocked(true);
       setLockoutCountdown(remainingTime);
@@ -135,8 +219,9 @@ const Login = ({ onLoginSuccess }) => {
       setRemainingAttempts(null);
       setLockoutMessage("");
       
-      // Clear stored locked username on successful login
+      // Clear stored locked data on successful login
       localStorage.removeItem('locked_username');
+      localStorage.removeItem('lockout_end_time');
       
       setResult({
         message: tokenData.message,
@@ -169,8 +254,23 @@ const Login = ({ onLoginSuccess }) => {
   const isButtonDisabled = isLocked || isLoading || lockoutCountdown > 0 || !username.trim() || !password.trim();
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-2">
-      <div className="bg-white p-4 sm:p-8 rounded shadow-md w-full max-w-sm mx-auto">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-2 relative">
+      {/* Lockout Overlay */}
+      {isLocked && lockoutCountdown > 0 && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-40 flex items-center justify-center">
+          <div className="bg-red-600 text-white p-6 rounded-lg shadow-xl text-center max-w-sm mx-4">
+            <div className="text-4xl mb-4">🔒</div>
+            <h2 className="text-xl font-bold mb-2">Account Locked</h2>
+            <p className="mb-4">Page refresh and navigation are disabled for security.</p>
+            <div className="text-3xl font-mono font-bold mb-2">
+              {formatTime(lockoutCountdown)}
+            </div>
+            <p className="text-sm opacity-90">Please wait for the lockout to expire</p>
+          </div>
+        </div>
+      )}
+      
+      <div className={`bg-white p-4 sm:p-8 rounded shadow-md w-full max-w-sm mx-auto ${isLocked ? 'opacity-75 pointer-events-none' : ''}`}>
         <h2 className="text-2xl sm:text-3xl font-bold mb-4 text-center text-gray-700">LDAP Login</h2>
         
         <form onSubmit={handleLogin} className="space-y-4" autoComplete="off">
@@ -222,19 +322,32 @@ const Login = ({ onLoginSuccess }) => {
 
         {/* Account Lockout Warning */}
         {isLocked && (
-          <div className="mt-4 p-3 border border-red-500 rounded bg-red-50">
+          <div className="mt-4 p-4 border-2 border-red-500 rounded-lg bg-red-50 shadow-lg">
             <div className="flex items-center">
               <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M10 1.944A11.954 11.954 0 012.166 5C2.056 5.649 2 6.319 2 7c0 5.225 3.34 9.67 8 11.317C14.66 16.67 18 12.225 18 7c0-.682-.057-1.351-.166-2A11.954 11.954 0 0110 1.944zM11 14a1 1 0 11-2 0 1 1 0 012 0zm0-7a1 1 0 10-2 0v3a1 1 0 102 0V7z" clipRule="evenodd" />
+                <svg className="h-6 w-6 text-red-500" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M5 9V7a5 5 0 0110 0v2a2 2 0 012 2v5a2 2 0 01-2 2H5a2 2 0 01-2-2v-5a2 2 0 012-2zm8-2v2H7V7a3 3 0 016 0z" clipRule="evenodd" />
                 </svg>
               </div>
               <div className="ml-3">
-                <h3 className="text-sm font-medium text-red-800">Account Temporarily Locked</h3>
+                <h3 className="text-lg font-bold text-red-800">🔒 Account Temporarily Locked</h3>
                 <div className="mt-2 text-sm text-red-700">
                   <p>{lockoutMessage}</p>
-                  <div className="mt-2 text-lg font-mono text-red-800">
-                    Time remaining: <span className="font-bold">{formatTime(lockoutCountdown)}</span>
+                  <div className="mt-3 p-2 bg-red-100 rounded border">
+                    <div className="text-center">
+                      <div className="text-2xl font-mono font-bold text-red-800">
+                        ⏱️ {formatTime(lockoutCountdown)}
+                      </div>
+                      <div className="text-xs text-red-600 mt-1">
+                        Time remaining
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 text-xs text-red-600 bg-red-100 p-2 rounded">
+                    <p><strong>⚠️ Security Notice:</strong></p>
+                    <p>• Page refresh is disabled during lockout</p>
+                    <p>• Navigation is restricted for security</p>
+                    <p>• Please wait for the timer to complete</p>
                   </div>
                 </div>
               </div>

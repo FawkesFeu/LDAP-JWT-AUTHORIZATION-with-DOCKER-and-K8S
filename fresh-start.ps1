@@ -11,7 +11,7 @@ Write-Host "Step 1: Cleaning up existing deployment..." -ForegroundColor Yellow
 # 1.5. ADDITIONAL PV CLEANUP (fix binding issues)
 Write-Host "Step 1.5: Fixing persistent volume bindings..." -ForegroundColor Yellow
 # Remove any existing PVs that might be in Released state
-kubectl delete pv ldap-data-pv-fixed ldap-config-pv-fixed --ignore-not-found=true
+kubectl delete pv ldap-data-pv-fixed ldap-config-pv-fixed 2>$null
 # Wait a moment for cleanup
 Start-Sleep 5
 
