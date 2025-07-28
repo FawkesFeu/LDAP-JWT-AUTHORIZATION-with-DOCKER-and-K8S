@@ -37,12 +37,12 @@ kubectl apply -f k8s/frontend-deployment.yaml
 echo "Waiting for frontend to be ready..."
 kubectl wait --for=condition=available --timeout=300s deployment/frontend-deployment -n ldap-jwt-app
 
-echo "Applying networking..."
-kubectl apply -f k8s/ingress.yaml
+echo "Applying networking and scaling..."
 kubectl apply -f k8s/network-policy.yaml
-
-echo "Applying auto-scaling..."
 kubectl apply -f k8s/hpa.yaml
+
+echo "Deploying NodePort services for external access..."
+kubectl apply -f k8s/nodeport-services.yaml
 
 echo "Deployment completed successfully!"
 
@@ -51,15 +51,13 @@ echo "=== Deployment Status ==="
 kubectl get pods -n ldap-jwt-app
 echo ""
 kubectl get services -n ldap-jwt-app
-echo ""
-kubectl get ingress -n ldap-jwt-app
 
 echo ""
 echo "=== Access Information ==="
-echo "If using NodePort services:"
-echo "Frontend: http://localhost:30080"
-echo "Backend:  http://localhost:30800"
+echo "Your application is accessible via NodePort services:"
 echo ""
-echo "If using Ingress:"
-echo "Add '127.0.0.1 ldap-jwt-app.local' to your /etc/hosts file"
-echo "Then access: http://ldap-jwt-app.local" 
+echo "Frontend: http://localhost:30080 or http://YOUR_IP:30080"
+echo "Backend:  http://localhost:30800 or http://YOUR_IP:30800"
+echo ""
+echo "To find your IP address, run: ipconfig | findstr IPv4"
+echo "Then access from any device on your network using your IP address." 

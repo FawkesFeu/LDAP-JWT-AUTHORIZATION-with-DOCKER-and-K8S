@@ -1,33 +1,43 @@
+---
+# Persistent Volume for LDAP data (will retain your users)
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: ldap-data-pv
-  namespace: ldap-jwt-app
+  name: ldap-data-pv-fixed
+  labels:
+    type: ldap-data
 spec:
   capacity:
     storage: 5Gi
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: hostpath
+  storageClassName: manual
   hostPath:
-    path: /data/ldap-data
+    path: /host_mnt/c/ldap-data
+    type: DirectoryOrCreate
+
 ---
+# Persistent Volume for LDAP config (will retain configuration)
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: ldap-config-pv
-  namespace: ldap-jwt-app
+  name: ldap-config-pv-fixed
+  labels:
+    type: ldap-config
 spec:
   capacity:
     storage: 1Gi
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: hostpath
+  storageClassName: manual
   hostPath:
-    path: /data/ldap-config
+    path: /host_mnt/c/ldap-config
+    type: DirectoryOrCreate
+
 ---
+# Persistent Volume Claim for LDAP data
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -39,8 +49,13 @@ spec:
   resources:
     requests:
       storage: 5Gi
-  storageClassName: hostpath
+  storageClassName: manual
+  selector:
+    matchLabels:
+      type: ldap-data
+
 ---
+# Persistent Volume Claim for LDAP config
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -52,4 +67,7 @@ spec:
   resources:
     requests:
       storage: 1Gi
-  storageClassName: hostpath 
+  storageClassName: manual
+  selector:
+    matchLabels:
+      type: ldap-config 
