@@ -1,16 +1,19 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getApiBaseUrl } from "../utils/apiConfig";
+import { getAuthorizationLevelInfo, getAuthorizationLevelColor, getAccessibleAreas } from "../utils/authLevels";
+import tokenManager from "../utils/tokenManager";
 
 const UserProfile = () => {
   const [user, setUser] = useState(null);
   const [ldapInfo, setLdapInfo] = useState(null);
+  const [authLevel, setAuthLevel] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const token = localStorage.getItem("jwe_token");
+    const token = tokenManager.getAccessToken();
     if (!token) {
       navigate("/login", { replace: true });
       return;
@@ -38,20 +41,45 @@ const UserProfile = () => {
   useEffect(() => {
     if (!user) return;
     // Fetch LDAP info from /users/me for all roles
-    const token = localStorage.getItem("jwe_token");
+    const token = tokenManager.getAccessToken();
     setLoading(true);
     setError(null);
-    fetch(`${getApiBaseUrl()}/users/me`, {
+    
+    // Fetch LDAP info
+    const fetchLdapInfo = fetch(`${getApiBaseUrl()}/users/me`, {
       headers: { Authorization: `Bearer ${token}` },
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        setLdapInfo(data);
+    }).then((res) => res.json());
+    
+    // Fetch authorization level
+    const fetchAuthLevel = fetch(`${getApiBaseUrl()}/user/authorization-level/${user.sub}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    }).then((res) => {
+      if (!res.ok) {
+        console.error('Failed to fetch authorization level:', res.status, res.statusText);
+        throw new Error(`Failed to fetch authorization level: ${res.status}`);
+      }
+      return res.json();
+    });
+    
+    Promise.all([fetchLdapInfo, fetchAuthLevel])
+      .then(([ldapData, authData]) => {
+        setLdapInfo(ldapData);
+        setAuthLevel(authData);
         setLoading(false);
       })
-      .catch(() => {
-        setError("Failed to load LDAP info.");
-        setLoading(false);
+      .catch((error) => {
+        console.error('Error loading user information:', error);
+        // Try to load LDAP info at least, even if auth level fails
+        fetchLdapInfo
+          .then((ldapData) => {
+            setLdapInfo(ldapData);
+            setAuthLevel({ authorization_level: 1, level_description: "Basic Access - Default level" });
+            setLoading(false);
+          })
+          .catch(() => {
+            setError("Failed to load user information.");
+            setLoading(false);
+          });
       });
   }, [user]);
 
@@ -100,8 +128,39 @@ const UserProfile = () => {
               <span className="font-medium text-gray-600">Role:</span>
               <span className="capitalize font-semibold">{ldapInfo?.role || user?.role}</span>
             </div>
+            <div className="flex flex-col sm:flex-row justify-between items-center py-2 border-b gap-2">
+              <span className="font-medium text-gray-600">Authorization Level:</span>
+              <div className="flex flex-col items-center">
+                <div className={`px-3 py-1 rounded-full border-2 ${getAuthorizationLevelColor(authLevel?.authorization_level || 1)}`}>
+                  <span className="font-bold text-sm">
+                    Level {authLevel?.authorization_level || 1}
+                  </span>
+                </div>
+                <span className="text-xs text-gray-500 mt-1 text-center">
+                  {authLevel?.level_description || "Basic Access - Standard user privileges"}
+                </span>
+              </div>
+            </div>
           </div>
         </div>
+        
+        {/* Authorization Level Details */}
+        {authLevel && (
+          <div className="mb-6">
+            <h3 className="text-lg font-semibold mb-4 text-gray-700">Access Permissions</h3>
+            <div className="bg-blue-50 p-4 rounded-lg border">
+              <h4 className="font-semibold text-blue-800 mb-2">Accessible Areas:</h4>
+              <div className="grid grid-cols-1 gap-2">
+                {getAccessibleAreas(authLevel.authorization_level).map((area, index) => (
+                  <div key={index} className="flex items-center">
+                    <span className="text-green-600 mr-2">✓</span>
+                    <span className="text-sm text-gray-700">{area}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
         
         {/* Debug Section - can be removed in production */}
         <details className="mb-6">
@@ -119,6 +178,12 @@ const UserProfile = () => {
               <h4 className="text-sm font-medium text-gray-600">LDAP Info:</h4>
               <pre className="bg-gray-100 p-2 rounded text-xs text-gray-800 font-mono overflow-x-auto">
                 {JSON.stringify(ldapInfo, null, 2)}
+              </pre>
+            </div>
+            <div>
+              <h4 className="text-sm font-medium text-gray-600">Authorization Info:</h4>
+              <pre className="bg-gray-100 p-2 rounded text-xs text-gray-800 font-mono overflow-x-auto">
+                {JSON.stringify(authLevel, null, 2)}
               </pre>
             </div>
           </div>

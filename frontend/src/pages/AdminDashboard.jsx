@@ -2,11 +2,14 @@ import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import tokenManager from "../utils/tokenManager";
 import { getApiBaseUrl } from "../utils/apiConfig";
+import { AUTHORIZATION_LEVELS, getAuthorizationLevelColor } from "../utils/authLevels";
 
 const ROLE_OPTIONS = [
   { value: "operator", label: "Operator" },
   { value: "personnel", label: "Personnel" },
 ];
+
+
 
 const AdminDashboard = () => {
   const [users, setUsers] = useState([]);
@@ -14,8 +17,19 @@ const AdminDashboard = () => {
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [roleEdits, setRoleEdits] = useState({});
+  const [authLevelEdits, setAuthLevelEdits] = useState({});
   const [pwEdits, setPwEdits] = useState({});
-  const [createUser, setCreateUser] = useState({ username: '', password: '', name: '', role: '' });
+  const [createUser, setCreateUser] = useState({ username: '', password: '', name: '', role: '', authorization_level: '' });
+
+  // Function to get default authorization level based on role
+  const getDefaultAuthLevel = (role) => {
+    const roleDefaults = {
+      'admin': 5,      // Maximum access
+      'operator': 3,   // Moderate access
+      'personnel': 1   // Basic access
+    };
+    return roleDefaults[role] || 1;
+  };
   
   // New state for filtering and searching
   const [searchTerm, setSearchTerm] = useState('');
@@ -112,6 +126,26 @@ const AdminDashboard = () => {
     }
   };
 
+  const handleAuthLevelChange = (uid) => async (e) => {
+    const token = tokenManager.getAccessToken();
+    const newAuthLevel = authLevelEdits[uid];
+    if (!newAuthLevel) return;
+    const formData = new URLSearchParams();
+    formData.append("username", uid);
+    formData.append("authorization_level", newAuthLevel);
+    const res = await fetch(`${getApiBaseUrl()}/admin/change-authorization-level`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (res.ok) {
+      setSuccess(`Authorization level updated for ${uid} to Level ${newAuthLevel}`);
+      fetchUsers(token);
+    } else {
+      setError(`Failed to update authorization level for ${uid}`);
+    }
+  };
+
   const handleCreateUser = async (e) => {
     e.preventDefault();
     setError(null);
@@ -129,8 +163,9 @@ const AdminDashboard = () => {
     const formData = new URLSearchParams();
     formData.append("username", createUser.username);
     formData.append("password", createUser.password);
-    formData.append("name", createUser.name); // <-- fix here
+    formData.append("name", createUser.name);
     formData.append("role", createUser.role);
+    formData.append("authorization_level", createUser.authorization_level);
     
     try {
       const res = await fetch(`${getApiBaseUrl()}/admin/create-user`, {
@@ -148,7 +183,7 @@ const AdminDashboard = () => {
         const responseData = await res.json();
         console.log("User created successfully:", responseData);
         setSuccess(`User ${createUser.username} created successfully`);
-        setCreateUser({ username: '', password: '', name: '', role: '' });
+        setCreateUser({ username: '', password: '', name: '', role: '', authorization_level: '' });
         fetchUsers(token);
       } else {
         const errorData = await res.json();
@@ -254,47 +289,99 @@ const AdminDashboard = () => {
     <div className="min-h-screen bg-gray-100 p-2">
       <div className="bg-white p-2 sm:p-6 rounded shadow-md w-full max-w-3xl mx-auto">
         <h2 className="text-2xl sm:text-3xl font-bold mb-4 text-center text-gray-700">Admin Dashboard</h2>
+        
+        {/* Info banner for authorization levels */}
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <div className="flex items-center">
+            <div className="flex-shrink-0">
+              <svg className="h-5 w-5 text-blue-400" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+              </svg>
+            </div>
+            <div className="ml-3">
+              <p className="text-sm text-blue-700">
+                <strong>Authorization Levels:</strong> Level 1 (Basic) → Level 5 (Maximum). 
+                Admin users should typically have Level 5 for full access to all areas.
+              </p>
+            </div>
+          </div>
+        </div>
         {/* Create User Section */}
-        <form onSubmit={handleCreateUser} className="mb-8 flex flex-nowrap gap-2 items-end overflow-x-auto">
-          <input
-            className="border rounded p-2 min-w-[120px]"
-            placeholder="Username"
-            value={createUser.username}
-            onChange={e => setCreateUser({ ...createUser, username: e.target.value })}
-            required
-          />
-          <input
-            className="border rounded p-2 min-w-[140px]"
-            placeholder="Full Name"
-            value={createUser.name}
-            onChange={e => setCreateUser({ ...createUser, name: e.target.value })}
-            required
-          />
-          <input
-            className="border rounded p-2 min-w-[120px]"
-            placeholder="Password"
-            type="password"
-            value={createUser.password}
-            onChange={e => setCreateUser({ ...createUser, password: e.target.value })}
-            required
-          />
-          <select
-            className="border rounded p-2 min-w-[120px]"
-            value={createUser.role}
-            onChange={e => setCreateUser({ ...createUser, role: e.target.value })}
-            required
-          >
-            <option value="">Select role</option>
-            {ROLE_OPTIONS.map(opt => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
-          <button
-            type="submit"
-            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 whitespace-nowrap"
-          >
-            Create User
-          </button>
+        <form onSubmit={handleCreateUser} className="mb-8 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <input
+              className="border rounded p-2"
+              placeholder="Username"
+              value={createUser.username}
+              onChange={e => setCreateUser({ ...createUser, username: e.target.value })}
+              required
+            />
+            <input
+              className="border rounded p-2"
+              placeholder="Full Name"
+              value={createUser.name}
+              onChange={e => setCreateUser({ ...createUser, name: e.target.value })}
+              required
+            />
+            <input
+              className="border rounded p-2"
+              placeholder="Password"
+              type="password"
+              value={createUser.password}
+              onChange={e => setCreateUser({ ...createUser, password: e.target.value })}
+              required
+            />
+            <select
+              className="border rounded p-2"
+              value={createUser.role}
+              onChange={e => {
+                const newRole = e.target.value;
+                const defaultAuthLevel = newRole ? getDefaultAuthLevel(newRole) : '';
+                setCreateUser({ 
+                  ...createUser, 
+                  role: newRole,
+                  authorization_level: defaultAuthLevel
+                });
+              }}
+              required
+            >
+              <option value="">Select role</option>
+              {ROLE_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+            <select
+              className="border rounded p-2"
+              value={createUser.authorization_level}
+              onChange={e => setCreateUser({ ...createUser, authorization_level: parseInt(e.target.value) })}
+              required
+            >
+              <option value="">Select Auth Level</option>
+              {AUTHORIZATION_LEVELS.map(level => (
+                <option key={level.value} value={level.value}>{level.label}</option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 whitespace-nowrap"
+            >
+              Create User
+            </button>
+          </div>
+          {/* Authorization Level Info */}
+          {createUser.authorization_level && (
+            <div className="text-sm text-gray-600 bg-blue-50 p-3 rounded border">
+              <div className="flex items-center justify-between">
+                <div>
+                  <strong>Selected Level {createUser.authorization_level}:</strong>{' '}
+                  {AUTHORIZATION_LEVELS.find(l => l.value === createUser.authorization_level)?.description}
+                </div>
+                {createUser.role && createUser.authorization_level === getDefaultAuthLevel(createUser.role) && (
+                  <span className="text-green-600 text-xs font-medium">✓ Recommended for {createUser.role}</span>
+                )}
+              </div>
+            </div>
+          )}
         </form>
         {/* End Create User Section */}
         
@@ -414,7 +501,9 @@ const AdminDashboard = () => {
                       )}
                     </div>
                   </th>
+                  <th className="p-2 border">Auth Level</th>
                   <th className="p-2 border">Change Role</th>
+                  <th className="p-2 border">Change Auth Level</th>
                   <th className="p-2 border">Reset Password</th>
                   <th className="p-2 border">Delete</th>
                 </tr>
@@ -422,7 +511,7 @@ const AdminDashboard = () => {
               <tbody>
                 {filteredAndSortedUsers.length === 0 ? (
                   <tr>
-                    <td colSpan="7" className="p-4 text-center text-gray-500">
+                    <td colSpan="9" className="p-4 text-center text-gray-500">
                       {users.length === 0 ? 'No users found' : 'No users match your search criteria'}
                     </td>
                   </tr>
@@ -433,6 +522,18 @@ const AdminDashboard = () => {
                     <td className="p-2 border">{user.uid}</td>
                     <td className="p-2 border">{user.cn}</td>
                     <td className="p-2 border font-bold">{user.role}</td>
+                    <td className="p-2 border text-center">
+                      <div className="flex flex-col items-center">
+                        <div className={`px-3 py-1 rounded-full border-2 ${getAuthorizationLevelColor(user.authorization_level || 1)}`}>
+                          <span className="font-bold text-sm">
+                            Level {user.authorization_level || 1}
+                          </span>
+                        </div>
+                        <span className="text-xs text-gray-500 mt-1">
+                          {AUTHORIZATION_LEVELS.find(l => l.value === (user.authorization_level || 1))?.label.split(' - ')[1]}
+                        </span>
+                      </div>
+                    </td>
                     <td className="p-2 border">
                       <div className="flex items-center gap-2">
                         <select
@@ -452,6 +553,28 @@ const AdminDashboard = () => {
                           className="bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700"
                           onClick={handleRoleChange(user.uid)}
                           disabled={user.role === "admin"}
+                        >
+                          Update
+                        </button>
+                      </div>
+                    </td>
+                    <td className="p-2 border">
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="border rounded p-1 text-xs"
+                          value={authLevelEdits[user.uid] || ""}
+                          onChange={(e) => setAuthLevelEdits({ ...authLevelEdits, [user.uid]: e.target.value })}
+                        >
+                          <option value="">Select level</option>
+                          {AUTHORIZATION_LEVELS.map((level) => (
+                            <option key={level.value} value={level.value}>
+                              Level {level.value}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          className="bg-purple-600 text-white px-2 py-1 rounded hover:bg-purple-700 text-xs"
+                          onClick={handleAuthLevelChange(user.uid)}
                         >
                           Update
                         </button>

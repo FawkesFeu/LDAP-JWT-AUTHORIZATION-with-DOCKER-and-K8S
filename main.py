@@ -574,16 +574,27 @@ def list_users(payload: dict = Depends(require_admin)):
     conn.search(
         search_base=LDAP_BASE_DN,
         search_filter="(objectClass=inetOrgPerson)",
-        attributes=["uid", "cn", "mail", "employeeType", "employeeNumber"]
+        attributes=["uid", "cn", "mail", "employeeType", "employeeNumber", "description"]
     )
     users = []
     for entry in conn.entries:
+        # Parse authorization level from description field
+        auth_level = None
+        if "description" in entry and entry.description.value:
+            desc = entry.description.value
+            if desc.startswith("auth_level:"):
+                try:
+                    auth_level = int(desc.split(":")[1])
+                except (ValueError, IndexError):
+                    auth_level = None
+        
         users.append({
             "uid": entry.uid.value,
             "cn": entry.cn.value,
             "mail": entry.mail.value if "mail" in entry else None,
             "role": entry.employeeType.value if "employeeType" in entry else None,
-            "employee_id": entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None
+            "employee_id": entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None,
+            "authorization_level": auth_level
         })
     return {"users": users}
 
@@ -607,14 +618,98 @@ def change_role(username: str = Form(...), new_role: str = Form(...), payload: d
         raise HTTPException(status_code=400, detail="Failed to change role")
     return {"message": f"Role changed for {username} to {new_role}"}
 
+@app.post("/admin/change-authorization-level")
+def change_authorization_level(
+    username: str = Form(...), 
+    authorization_level: int = Form(...), 
+    payload: dict = Depends(require_admin)
+):
+    # Validate authorization level
+    if authorization_level < 1 or authorization_level > 5:
+        raise HTTPException(status_code=400, detail="Authorization level must be between 1 and 5")
+    
+    user_dn = f"uid={username},{LDAP_BASE_DN}"
+    server = Server(LDAP_SERVER, get_info=ALL)
+    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+    
+    # Store authorization level in description field
+    auth_level_desc = f"auth_level:{authorization_level}"
+    success = conn.modify(user_dn, {"description": [(MODIFY_REPLACE, [auth_level_desc])]})
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to change authorization level")
+    
+    return {"message": f"Authorization level changed for {username} to level {authorization_level}"}
+
+@app.get("/user/authorization-level/{username}")
+def get_user_authorization_level(username: str, request: Request):
+    """Get user's authorization level - accessible by authenticated users"""
+    # Validate JWT token
+    payload = get_jwt_payload(request)
+    
+    server = Server(LDAP_SERVER, get_info=ALL)
+    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+    
+    user_dn = f"uid={username},{LDAP_BASE_DN}"
+    conn.search(
+        search_base=user_dn,
+        search_filter="(objectClass=inetOrgPerson)",
+        attributes=["description"]
+    )
+    
+    if not conn.entries:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    entry = conn.entries[0]
+    auth_level = 1  # Default level
+    
+    if "description" in entry and entry.description.value:
+        desc = entry.description.value
+        if desc.startswith("auth_level:"):
+            try:
+                auth_level = int(desc.split(":")[1])
+            except (ValueError, IndexError):
+                auth_level = 1
+    
+    return {
+        "username": username,
+        "authorization_level": auth_level,
+        "level_description": get_authorization_level_description(auth_level)
+    }
+
+def get_authorization_level_description(level: int) -> str:
+    """Get description for authorization level"""
+    descriptions = {
+        1: "Basic Access - Standard user privileges",
+        2: "Limited Access - Can view some restricted areas",
+        3: "Moderate Access - Can access most restricted areas",
+        4: "High Access - Can access sensitive areas",
+        5: "Maximum Access - Full access to all restricted areas"
+    }
+    return descriptions.get(level, "Unknown Level")
+
 @app.post("/admin/create-user")
 def create_user(
     username: str = Form(...),
     password: str = Form(...),
     name: str = Form(...),
     role: str = Form(...),
+    authorization_level: int = Form(None),  # Will be set based on role
     payload: dict = Depends(require_admin),
 ):
+    # Set default authorization level based on role if not provided
+    if authorization_level is None:
+        role_defaults = {
+            "admin": 5,      # Maximum access
+            "operator": 3,   # Moderate access
+            "personnel": 1   # Basic access
+        }
+        authorization_level = role_defaults.get(role, 1)
+    
+    # Validate authorization level
+    if authorization_level < 1 or authorization_level > 5:
+        raise HTTPException(status_code=400, detail="Authorization level must be between 1 and 5")
+    
     user_dn = f"uid={username},{LDAP_BASE_DN}"
     server = Server(LDAP_SERVER, get_info=ALL)
     conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
@@ -633,11 +728,12 @@ def create_user(
                 "userPassword": password,
                 "employeeType": role,
                 "employeeNumber": employee_id,
+                "description": f"auth_level:{authorization_level}",
             },
         )
         if not conn.result["description"] == "success":
             raise Exception(conn.result["description"])
-        return {"message": f"User {username} created"}
+        return {"message": f"User {username} created with authorization level {authorization_level}"}
     except LDAPEntryAlreadyExistsResult:
         raise HTTPException(status_code=400, detail="User already exists")
     except Exception as e:
