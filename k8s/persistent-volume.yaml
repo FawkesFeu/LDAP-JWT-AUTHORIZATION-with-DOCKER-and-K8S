@@ -14,7 +14,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: manual
   hostPath:
-    path: /host_mnt/c/ldap-data
+    path: /run/desktop/mnt/host/c/ldap-data
     type: DirectoryOrCreate
 
 ---
@@ -33,7 +33,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   storageClassName: manual
   hostPath:
-    path: /host_mnt/c/ldap-config
+    path: /run/desktop/mnt/host/c/ldap-config
     type: DirectoryOrCreate
 
 ---

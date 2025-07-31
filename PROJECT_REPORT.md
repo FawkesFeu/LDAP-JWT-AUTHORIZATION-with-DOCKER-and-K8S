@@ -93,7 +93,6 @@ This project delivers a **production-ready enterprise authentication system** th
 #### **Account Protection:**
 - **Lockout Mechanism**: 3 failed attempts → 30-second lockout
 - **Lockout Persistence**: Survives page refresh attempts
-- **Progressive Delays**: Increasing lockout times for repeated failures
 - **Visual Feedback**: Clear lockout status with countdown timer
 
 #### **Token Security:**
@@ -267,35 +266,6 @@ This project delivers a **production-ready enterprise authentication system** th
 - Auto-scaling configuration
 - Network security policies
 - Comprehensive error handling
-
-### **Technical Challenges Solved:**
-
-#### **1. Lockout Persistence Issue**
-- **Problem**: Page refresh broke lockout countdown
-- **Solution**: Implemented localStorage-based end time storage
-- **Result**: Lockout survives page refresh with accurate countdown
-
-#### **2. Backend Crash Issue**
-- **Problem**: `NameError: name 'require_valid_token' is not defined`
-- **Solution**: Fixed function reference to use `get_jwt_payload`
-- **Result**: Stable backend deployment
-
-#### **3. Authorization Level Display**
-- **Problem**: Wrong user field reference (`user.username` vs `user.sub`)
-- **Solution**: Corrected JWT payload field usage
-- **Result**: Accurate authorization level display
-
-#### **4. Data Persistence**
-- **Problem**: User data lost on container restart
-- **Solution**: Implemented persistent volumes with manual storage class
-- **Result**: User data survives deployments and restarts
-
-#### **5. Admin Access Control**
-- **Problem**: Admin users couldn't modify their own authorization levels
-- **Solution**: Removed restrictions on admin authorization level changes
-- **Result**: Full admin control over authorization levels
-
----
 
 ## 📈 PERFORMANCE METRICS
 
