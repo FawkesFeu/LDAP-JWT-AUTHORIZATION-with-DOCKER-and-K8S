@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import tokenManager from "../utils/tokenManager";
 import { getApiBaseUrl } from "../utils/apiConfig";
 import { AUTHORIZATION_LEVELS, getAuthorizationLevelColor } from "../utils/authLevels";
+import PasswordReset from "../components/PasswordReset";
+import UserRegistration from "../components/UserRegistration";
 
 const ROLE_OPTIONS = [
   { value: "operator", label: "Operator" },
@@ -20,6 +22,9 @@ const AdminDashboard = () => {
   const [authLevelEdits, setAuthLevelEdits] = useState({});
   const [pwEdits, setPwEdits] = useState({});
   const [createUser, setCreateUser] = useState({ username: '', password: '', name: '', role: '', authorization_level: '' });
+  const [showPasswordReset, setShowPasswordReset] = useState(false);
+  const [showUserRegistration, setShowUserRegistration] = useState(false);
+  const [selectedUser, setSelectedUser] = useState(null);
 
   // Function to get default authorization level based on role
   const getDefaultAuthLevel = (role) => {
@@ -107,23 +112,20 @@ const AdminDashboard = () => {
     }
   };
 
-  const handlePasswordReset = (uid) => async (e) => {
-    const token = tokenManager.getAccessToken();
-    const newPw = pwEdits[uid];
-    if (!newPw) return;
-    const formData = new URLSearchParams();
-    formData.append("username", uid);
-    formData.append("new_password", newPw);
-    const res = await fetch(`${getApiBaseUrl()}/admin/reset-password`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      body: formData,
-    });
-    if (res.ok) {
-      setSuccess(`Password reset for ${uid}`);
-    } else {
-      setError(`Failed to reset password for ${uid}`);
-    }
+  const handlePasswordReset = (uid) => {
+    setSelectedUser(uid);
+    setShowPasswordReset(true);
+  };
+
+  const handlePasswordResetSuccess = () => {
+    setShowPasswordReset(false);
+    setSelectedUser(null);
+    fetchUsers(tokenManager.getAccessToken());
+  };
+
+  const handlePasswordResetCancel = () => {
+    setShowPasswordReset(false);
+    setSelectedUser(null);
   };
 
   const handleAuthLevelChange = (uid) => async (e) => {
@@ -146,54 +148,17 @@ const AdminDashboard = () => {
     }
   };
 
-  const handleCreateUser = async (e) => {
-    e.preventDefault();
-    setError(null);
-    setSuccess(null);
-    
-    const token = tokenManager.getAccessToken();
-    if (!token) {
-      setError("No authentication token found");
-      return;
-    }
-    
-    console.log("Creating user with token:", token.substring(0, 20) + "...");
-    console.log("User data:", createUser);
-    
-    const formData = new URLSearchParams();
-    formData.append("username", createUser.username);
-    formData.append("password", createUser.password);
-    formData.append("name", createUser.name);
-    formData.append("role", createUser.role);
-    formData.append("authorization_level", createUser.authorization_level);
-    
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/admin/create-user`, {
-        method: "POST",
-        headers: { 
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: formData,
-      });
-      
-      console.log("Response status:", res.status);
-      
-      if (res.ok) {
-        const responseData = await res.json();
-        console.log("User created successfully:", responseData);
-        setSuccess(`User ${createUser.username} created successfully`);
-        setCreateUser({ username: '', password: '', name: '', role: '', authorization_level: '' });
-        fetchUsers(token);
-      } else {
-        const errorData = await res.json();
-        console.error("Error creating user:", errorData);
-        setError(errorData.detail || `Failed to create user (${res.status})`);
-      }
-    } catch (error) {
-      console.error("Network error:", error);
-      setError(`Network error: ${error.message}`);
-    }
+  const handleCreateUser = () => {
+    setShowUserRegistration(true);
+  };
+
+  const handleUserRegistrationSuccess = () => {
+    setShowUserRegistration(false);
+    fetchUsers(tokenManager.getAccessToken());
+  };
+
+  const handleUserRegistrationCancel = () => {
+    setShowUserRegistration(false);
   };
 
   const handleDeleteUser = (uid) => async () => {
@@ -307,82 +272,17 @@ const AdminDashboard = () => {
           </div>
         </div>
         {/* Create User Section */}
-        <form onSubmit={handleCreateUser} className="mb-8 space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <input
-              className="border rounded p-2"
-              placeholder="Username"
-              value={createUser.username}
-              onChange={e => setCreateUser({ ...createUser, username: e.target.value })}
-              required
-            />
-            <input
-              className="border rounded p-2"
-              placeholder="Full Name"
-              value={createUser.name}
-              onChange={e => setCreateUser({ ...createUser, name: e.target.value })}
-              required
-            />
-            <input
-              className="border rounded p-2"
-              placeholder="Password"
-              type="password"
-              value={createUser.password}
-              onChange={e => setCreateUser({ ...createUser, password: e.target.value })}
-              required
-            />
-            <select
-              className="border rounded p-2"
-              value={createUser.role}
-              onChange={e => {
-                const newRole = e.target.value;
-                const defaultAuthLevel = newRole ? getDefaultAuthLevel(newRole) : '';
-                setCreateUser({ 
-                  ...createUser, 
-                  role: newRole,
-                  authorization_level: defaultAuthLevel
-                });
-              }}
-              required
-            >
-              <option value="">Select role</option>
-              {ROLE_OPTIONS.map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-            <select
-              className="border rounded p-2"
-              value={createUser.authorization_level}
-              onChange={e => setCreateUser({ ...createUser, authorization_level: parseInt(e.target.value) })}
-              required
-            >
-              <option value="">Select Auth Level</option>
-              {AUTHORIZATION_LEVELS.map(level => (
-                <option key={level.value} value={level.value}>{level.label}</option>
-              ))}
-            </select>
-            <button
-              type="submit"
-              className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 whitespace-nowrap"
-            >
-              Create User
-            </button>
-          </div>
-          {/* Authorization Level Info */}
-          {createUser.authorization_level && (
-            <div className="text-sm text-gray-600 bg-blue-50 p-3 rounded border">
-              <div className="flex items-center justify-between">
-                <div>
-                  <strong>Selected Level {createUser.authorization_level}:</strong>{' '}
-                  {AUTHORIZATION_LEVELS.find(l => l.value === createUser.authorization_level)?.description}
-                </div>
-                {createUser.role && createUser.authorization_level === getDefaultAuthLevel(createUser.role) && (
-                  <span className="text-green-600 text-xs font-medium">✓ Recommended for {createUser.role}</span>
-                )}
-              </div>
-            </div>
-          )}
-        </form>
+        <div className="mb-8">
+          <button
+            onClick={handleCreateUser}
+            className="bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700 transition-colors flex items-center space-x-2"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            <span>Create New User</span>
+          </button>
+        </div>
         {/* End Create User Section */}
         
         {/* Search and Filter Section */}
@@ -581,21 +481,13 @@ const AdminDashboard = () => {
                       </div>
                     </td>
                     <td className="p-2 border">
-                      <div className="flex items-center gap-2">
-                        <input
-                          className="border rounded p-1"
-                          placeholder="New password"
-                          type="password"
-                          value={pwEdits[user.uid] || ""}
-                          onChange={(e) => setPwEdits({ ...pwEdits, [user.uid]: e.target.value })}
-                        />
-                        <button
-                          className="bg-green-600 text-white px-2 py-1 rounded hover:bg-green-700"
-                          onClick={handlePasswordReset(user.uid)}
-                        >
-                          Reset
-                        </button>
-                      </div>
+                      <button
+                        className="bg-green-600 text-white px-3 py-1 rounded hover:bg-green-700 text-xs whitespace-nowrap transition-all"
+                        style={{ minWidth: 60 }}
+                        onClick={() => handlePasswordReset(user.uid)}
+                      >
+                        Reset
+                      </button>
                     </td>
                     <td className="p-2 border text-center">
                       {user.role !== "admin" && (
@@ -622,6 +514,23 @@ const AdminDashboard = () => {
           Go Back
         </button>
       </div>
+
+      {/* Password Reset Modal */}
+      {showPasswordReset && selectedUser && (
+        <PasswordReset
+          username={selectedUser}
+          onSuccess={handlePasswordResetSuccess}
+          onCancel={handlePasswordResetCancel}
+        />
+      )}
+
+      {/* User Registration Modal */}
+      {showUserRegistration && (
+        <UserRegistration
+          onSuccess={handleUserRegistrationSuccess}
+          onCancel={handleUserRegistrationCancel}
+        />
+      )}
     </div>
   );
 };

@@ -292,9 +292,11 @@ class User(BaseModel):
 def get_jwt_payload(request: Request):
     """Extract and verify JWT payload from request header"""
     token = request.headers.get("authorization")
+    print(f"DEBUG: Authorization header: {token}")
     if not token or not token.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
     token = token.split(" ", 1)[1]
+    print(f"DEBUG: Extracted token: {token[:20]}..." if token else "DEBUG: Token is empty")
     return verify_access_token(token)
 
 def require_admin(request: Request):
@@ -688,6 +690,70 @@ def get_authorization_level_description(level: int) -> str:
     }
     return descriptions.get(level, "Unknown Level")
 
+def validate_password_strength(password: str) -> dict:
+    """
+    Validate password strength requirements
+    Returns: {"valid": bool, "errors": list}
+    """
+    errors = []
+    
+    if len(password) < 8:
+        errors.append("Password must be at least 8 characters long")
+    
+    if not any(c.isupper() for c in password):
+        errors.append("Password must contain at least one uppercase letter")
+    
+    if not any(c.islower() for c in password):
+        errors.append("Password must contain at least one lowercase letter")
+    
+    if not any(c.isdigit() for c in password):
+        errors.append("Password must contain at least one digit")
+    
+    # Check for special characters
+    special_chars = "!@#$%^&*()_+-=[]{}|;:,.<>?"
+    if not any(c in special_chars for c in password):
+        errors.append("Password must contain at least one special character (!@#$%^&*)")
+    
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors
+    }
+
+@app.post("/admin/reset-password-with-validation")
+def reset_password_with_validation(
+    username: str = Form(...), 
+    new_password: str = Form(...), 
+    confirm_password: str = Form(...),
+    payload: dict = Depends(require_admin)
+):
+    """Reset password with validation and confirmation field"""
+    
+    # Check if passwords match
+    if new_password != confirm_password:
+        raise HTTPException(
+            status_code=400, 
+            detail="Passwords do not match"
+        )
+    
+    # Validate password strength
+    validation_result = validate_password_strength(new_password)
+    if not validation_result["valid"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password validation failed: {'; '.join(validation_result['errors'])}"
+        )
+    
+    # Reset the password in LDAP
+    user_dn = f"uid={username},{LDAP_BASE_DN}"
+    server = Server(LDAP_SERVER, get_info=ALL)
+    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+    success = conn.modify(user_dn, {"userPassword": [(MODIFY_REPLACE, [new_password])]})
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to reset password")
+    
+    return {"message": f"Password reset successfully for {username}"}
+
 @app.post("/admin/create-user")
 def create_user(
     username: str = Form(...),
@@ -807,4 +873,79 @@ def get_my_info(request: Request):
         "cn": entry.cn.value,
         "role": entry.employeeType.value if "employeeType" in entry else None,
         "employee_id": entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None
+    }
+
+@app.post("/admin/create-user-with-validation")
+def create_user_with_validation(
+    username: str = Form(...),
+    password: str = Form(...),
+    name: str = Form(...),
+    role: str = Form(...),
+    authorization_level: int = Form(None),
+    payload: dict = Depends(require_admin),
+):
+    """Create user with password validation"""
+    
+    # Validate password strength
+    validation_result = validate_password_strength(password)
+    if not validation_result["valid"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password validation failed: {'; '.join(validation_result['errors'])}"
+        )
+    
+    # Set default authorization level based on role if not provided
+    if authorization_level is None:
+        role_defaults = {
+            "admin": 5,      # Maximum access
+            "operator": 3,   # Moderate access
+            "personnel": 1   # Basic access
+        }
+        authorization_level = role_defaults.get(role, 1)
+    
+    # Validate authorization level
+    if authorization_level < 1 or authorization_level > 5:
+        raise HTTPException(status_code=400, detail="Authorization level must be between 1 and 5")
+    
+    user_dn = f"uid={username},{LDAP_BASE_DN}"
+    server = Server(LDAP_SERVER, get_info=ALL)
+    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+    
+    # Generate the next employee ID
+    employee_id = get_next_employee_id(role, conn)
+    
+    try:
+        conn.add(
+            user_dn,
+            ["inetOrgPerson", "top"],
+            {
+                "uid": username,
+                "cn": name,
+                "sn": name.split(" ")[-1] if " " in name else name,
+                "userPassword": password,
+                "employeeType": role,
+                "employeeNumber": employee_id,
+                "description": f"auth_level:{authorization_level}",
+            },
+        )
+        if not conn.result["description"] == "success":
+            raise Exception(conn.result["description"])
+        return {"message": f"User {username} created successfully with authorization level {authorization_level}"}
+    except LDAPEntryAlreadyExistsResult:
+        raise HTTPException(status_code=400, detail="User already exists")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to create user: {e}")
+
+@app.get("/password-requirements")
+def get_password_requirements():
+    """Get password requirements for frontend validation"""
+    return {
+        "requirements": [
+            "Minimum 8 characters",
+            "At least one uppercase letter",
+            "At least one lowercase letter", 
+            "At least one digit",
+            "At least one special character (!@#$%^&*)"
+        ],
+        "min_length": 8
     }
