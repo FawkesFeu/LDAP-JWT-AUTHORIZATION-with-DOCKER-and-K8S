@@ -30,28 +30,4 @@ data:
     userPassword: admin123
     employeeType: admin
     employeeNumber: ADMIN_01
-    description: auth_level:5
-
-    # Operator user
-    dn: uid=operator1,ou=users,dc=example,dc=com
-    objectClass: top
-    objectClass: inetOrgPerson
-    uid: operator1
-    cn: Operator One
-    sn: One
-    userPassword: operator123
-    employeeType: operator
-    employeeNumber: OP_01
-    description: auth_level:3
-
-    # Personnel user
-    dn: uid=user1,ou=users,dc=example,dc=com
-    objectClass: top
-    objectClass: inetOrgPerson
-    uid: user1
-    cn: User One
-    sn: One
-    userPassword: user123
-    employeeType: personnel
-    employeeNumber: PER_01
-    description: auth_level:1 
+    description: auth_level:5 

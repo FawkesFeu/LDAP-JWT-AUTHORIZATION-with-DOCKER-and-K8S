@@ -32,6 +32,55 @@ spec:
                   password='auth_metadata_pass'
               )
           
+          def fix_sequence_gaps():
+              try:
+                  db_conn = get_db_connection()
+                  
+                  print("🔄 Fixing sequence gaps...")
+                  
+                  with db_conn.cursor() as cursor:
+                      # Fix users_id_seq
+                      cursor.execute("SELECT MAX(id) FROM users")
+                      result = cursor.fetchone()
+                      max_user_id = result[0] if result and result[0] else 0
+                      if max_user_id > 0:
+                          # Set sequence to max_id + 1 so next ID will be correct
+                          cursor.execute("SELECT setval('users_id_seq', %s, true)", (max_user_id + 1,))
+                          print(f"✅ Fixed users_id_seq to {max_user_id + 1} (next ID will be {max_user_id + 1})")
+                      else:
+                          print("⚠️ No users found, keeping users_id_seq at default")
+                      
+                      # Fix operators_id_seq
+                      cursor.execute("SELECT MAX(id) FROM operators")
+                      result = cursor.fetchone()
+                      max_operator_id = result[0] if result and result[0] else 0
+                      if max_operator_id > 0:
+                          cursor.execute("SELECT setval('operators_id_seq', %s, true)", (max_operator_id + 1,))
+                          print(f"✅ Fixed operators_id_seq to {max_operator_id + 1}")
+                      else:
+                          print("⚠️ No operators found, keeping operators_id_seq at default")
+                      
+                      # Fix personnel_id_seq
+                      cursor.execute("SELECT MAX(id) FROM personnel")
+                      result = cursor.fetchone()
+                      max_personnel_id = result[0] if result and result[0] else 0
+                      if max_personnel_id > 0:
+                          cursor.execute("SELECT setval('personnel_id_seq', %s, true)", (max_personnel_id + 1,))
+                          print(f"✅ Fixed personnel_id_seq to {max_personnel_id + 1}")
+                      else:
+                          print("⚠️ No personnel found, keeping personnel_id_seq at default")
+                      
+                      db_conn.commit()
+                      print("✅ Sequence gaps fixed")
+                      
+              except Exception as e:
+                  print(f"⚠️ Warning fixing sequence gaps: {e}")
+                  if 'db_conn' in locals():
+                      db_conn.rollback()
+              finally:
+                  if 'db_conn' in locals():
+                      db_conn.close()
+          
           def populate_separate_tables():
               try:
                   db_conn = get_db_connection()
@@ -108,6 +157,7 @@ spec:
           if __name__ == "__main__":
               print("🚀 Starting Table Population")
               print("=" * 40)
+              fix_sequence_gaps()
               populate_separate_tables()
               print("\\n🎉 Table population process completed!")
           EOF

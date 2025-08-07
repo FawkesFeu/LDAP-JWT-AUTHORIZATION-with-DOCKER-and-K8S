@@ -474,18 +474,28 @@ def login(username: str = Form(...), password: str = Form(...)):
         conn.search(
             search_base=user_dn,
             search_filter="(objectClass=*)",
-            attributes=["cn", "mail", "employeeType", "employeeNumber"]
+            attributes=["cn", "mail", "employeeType", "employeeNumber", "description"]
         )
         if not conn.entries:
             raise HTTPException(status_code=404, detail="User not found in LDAP after bind")
         entry = conn.entries[0]
         role = entry.employeeType.value if "employeeType" in entry else "user"
         
+        # Get authorization level from description field
+        auth_level = 1  # Default level
+        if "description" in entry and entry.description.value:
+            desc = entry.description.value
+            if desc.startswith("auth_level:"):
+                try:
+                    auth_level = int(desc.split(":")[1])
+                except (ValueError, IndexError):
+                    auth_level = 1
+        
         # Record successful login in database
         try:
             db_service.record_login_attempt(username, 'success')
-            # Upsert user in database for metadata tracking with correct role
-            db_service.upsert_user(username, user_dn, role)
+            # Upsert user in database for metadata tracking with correct role and auth level
+            db_service.upsert_user(username, user_dn, role, auth_level)
         except Exception as e:
             print(f"Error recording successful login: {e}")
         
@@ -537,7 +547,7 @@ def refresh_access_token(refresh_token: str = Form(...)):
         conn.search(
             search_base=user_dn,
             search_filter="(objectClass=*)",
-            attributes=["employeeType"]
+            attributes=["employeeType", "description"]
         )
         
         if not conn.entries:
@@ -545,6 +555,22 @@ def refresh_access_token(refresh_token: str = Form(...)):
             
         entry = conn.entries[0]
         role = entry.employeeType.value if "employeeType" in entry else "user"
+        
+        # Get authorization level from description field
+        auth_level = 1  # Default level
+        if "description" in entry and entry.description.value:
+            desc = entry.description.value
+            if desc.startswith("auth_level:"):
+                try:
+                    auth_level = int(desc.split(":")[1])
+                except (ValueError, IndexError):
+                    auth_level = 1
+        
+        # Update database with current auth level from LDAP
+        try:
+            db_service.upsert_user(username, user_dn, role, auth_level)
+        except Exception as e:
+            print(f"Error updating user auth level during refresh: {e}")
         
         # Generate new access token
         new_access_token = generate_access_token(username, role)

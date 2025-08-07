@@ -138,9 +138,8 @@ Write-Host "Database: $ipAddress:30432 (DBeaver connection)" -ForegroundColor Cy
 Write-Host ""
 Write-Host "Default Login Credentials:" -ForegroundColor White
 Write-Host "admin / admin123 (admin role)" -ForegroundColor Green
-Write-Host "operator1 / operator123 (operator role)" -ForegroundColor Green
-Write-Host "user1 / user123 (personnel role)" -ForegroundColor Green
 Write-Host ""
+Write-Host "Note: Create additional users through the admin interface" -ForegroundColor Yellow
 Write-Host "Database Credentials:" -ForegroundColor White
 Write-Host "Host: $ipAddress" -ForegroundColor Cyan
 Write-Host "Port: 30432" -ForegroundColor Cyan

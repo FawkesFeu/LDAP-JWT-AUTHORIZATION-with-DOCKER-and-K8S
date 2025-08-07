@@ -64,6 +64,48 @@ def update_existing_tables(cursor):
     except Exception as e:
         print(f"⚠️ Warning adding lockout_until column: {e}")
 
+def fix_sequence_gaps(cursor):
+    """Fix sequence gaps by resetting them to match actual data"""
+    try:
+        print("🔄 Fixing sequence gaps...")
+        
+        # Fix users_id_seq
+        cursor.execute("SELECT MAX(id) FROM users")
+        result = cursor.fetchone()
+        max_user_id = result[0] if result and result[0] else 0
+        if max_user_id > 0:
+            cursor.execute("SELECT setval('users_id_seq', %s, true)", (max_user_id,))
+            print(f"✅ Fixed users_id_seq to {max_user_id}")
+        else:
+            print("⚠️ No users found, keeping users_id_seq at default")
+        
+        # Fix operators_id_seq
+        cursor.execute("SELECT MAX(id) FROM operators")
+        result = cursor.fetchone()
+        max_operator_id = result[0] if result and result[0] else 0
+        if max_operator_id > 0:
+            cursor.execute("SELECT setval('operators_id_seq', %s, true)", (max_operator_id,))
+            print(f"✅ Fixed operators_id_seq to {max_operator_id}")
+        else:
+            print("⚠️ No operators found, keeping operators_id_seq at default")
+        
+        # Fix personnel_id_seq
+        cursor.execute("SELECT MAX(id) FROM personnel")
+        result = cursor.fetchone()
+        max_personnel_id = result[0] if result and result[0] else 0
+        if max_personnel_id > 0:
+            cursor.execute("SELECT setval('personnel_id_seq', %s, true)", (max_personnel_id,))
+            print(f"✅ Fixed personnel_id_seq to {max_personnel_id}")
+        else:
+            print("⚠️ No personnel found, keeping personnel_id_seq at default")
+        
+        print("✅ Sequence gaps fixed")
+        
+    except Exception as e:
+        print(f"⚠️ Warning fixing sequence gaps: {e}")
+        import traceback
+        traceback.print_exc()
+
 def apply_schema():
     """Apply the complete database schema"""
     try:
@@ -168,6 +210,9 @@ def apply_schema():
                 create_missing_functions(cursor, missing_functions)
             else:
                 print("✅ All expected functions exist")
+            
+            # Fix sequence gaps to ensure proper ID generation
+            # fix_sequence_gaps(cursor) # Moved to create_initial_data
         
         conn.close()
         return True
@@ -458,18 +503,6 @@ def create_initial_data():
                     ON CONFLICT (username) DO NOTHING
                 """)
                 
-                cursor.execute("""
-                    INSERT INTO users (username, role, authorization_level, employee_id, is_active)
-                    VALUES ('operator1', 'operator', 3, 'OP_01', true)
-                    ON CONFLICT (username) DO NOTHING
-                """)
-                
-                cursor.execute("""
-                    INSERT INTO users (username, role, authorization_level, employee_id, is_active)
-                    VALUES ('user1', 'personnel', 1, 'PER_01', true)
-                    ON CONFLICT (username) DO NOTHING
-                """)
-                
                 conn.commit()
                 print("✅ Initial data created")
             else:
@@ -488,6 +521,7 @@ if __name__ == "__main__":
     if apply_schema():
         # Create initial data
         create_initial_data()
+        
         print("\n🎉 Database initialization completed successfully!")
         sys.exit(0)
     else:
