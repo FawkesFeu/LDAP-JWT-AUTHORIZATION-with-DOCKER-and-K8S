@@ -1,6 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2 import extensions
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Any
 import logging
@@ -28,7 +29,8 @@ class DatabaseService:
                 logger.info("Database connection established")
             except Exception as e:
                 logger.error(f"Failed to connect to database: {e}")
-                raise
+                # Don't raise immediately, try to return None and let caller handle
+                return None
         return self._connection
 
     def close_connection(self):
@@ -37,11 +39,28 @@ class DatabaseService:
             self._connection.close()
             logger.info("Database connection closed")
 
+    def test_connection(self):
+        """Test database connection"""
+        try:
+            conn = self.get_connection()
+            if conn is None:
+                return False
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
+                result = cursor.fetchone()
+                return result is not None
+        except Exception as e:
+            logger.error(f"Database connection test failed: {e}")
+            return False
+
     def record_login_attempt(self, username: str, attempt_type: str, ip_address: str = None, 
                            user_agent: str = None, session_id: str = None, error_message: str = None):
         """Record a login attempt in the database"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot record login attempt for {username}: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 # Insert login attempt
                 cursor.execute("""
@@ -79,6 +98,9 @@ class DatabaseService:
         """Get current lockout status for a user"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot get lockout status for {username}: database connection failed.")
+                return {'is_locked': False, 'lockout_until': None, 'failed_attempts_count': 0}
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     SELECT is_locked, lockout_until, failed_attempts_count
@@ -97,6 +119,9 @@ class DatabaseService:
         """Set user lockout status"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot set lockout for {username}: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 # Update user table
                 cursor.execute("""
@@ -121,6 +146,9 @@ class DatabaseService:
         """Unlock a user account"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot unlock user {username}: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE users 
@@ -146,6 +174,9 @@ class DatabaseService:
         """Store a refresh token in the database"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot store refresh token for {username}: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO jwt_sessions (token_id, username, token_type, expires_at, ip_address, user_agent)
@@ -161,6 +192,9 @@ class DatabaseService:
         """Revoke a refresh token"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot revoke token {token_id}: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE jwt_sessions 
@@ -177,6 +211,9 @@ class DatabaseService:
         """Revoke all tokens for a user"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot revoke all tokens for {username}: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE jwt_sessions 
@@ -193,6 +230,9 @@ class DatabaseService:
         """Get active refresh tokens"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot get active refresh tokens for {username}: database connection failed.")
+                return []
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 if username:
                     cursor.execute("""
@@ -215,6 +255,9 @@ class DatabaseService:
         """Clean up expired tokens"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot cleanup expired tokens: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 cursor.execute("""
                     UPDATE jwt_sessions 
@@ -230,31 +273,47 @@ class DatabaseService:
     def upsert_user(self, username: str, ldap_dn: str = None, role: str = 'user', 
                     authorization_level: int = 1, employee_id: str = None) -> int:
         """Create or update a user with persistent employee ID"""
+        conn = None
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot upsert user {username}: database connection failed.")
+                return 0
+            
+            # Get a fresh connection to avoid transaction issues
+            if conn.get_transaction_status() != extensions.TRANSACTION_STATUS_IDLE:
+                logger.info(f"Resetting connection for user {username} due to transaction status")
+                conn.close()
+                conn = self.get_connection()
+                if conn is None:
+                    logger.error(f"Cannot get fresh connection for user {username}")
+                    return 0
+            
+            conn.autocommit = False  # Start transaction
+            
             with conn.cursor() as cursor:
                 # If no employee_id provided, generate one using database function
                 if not employee_id:
-                    cursor.execute("SELECT get_next_employee_id(%s)", (role,))
-                    employee_id = cursor.fetchone()[0]
+                    try:
+                        cursor.execute("SELECT get_next_employee_id(%s)", (role,))
+                        result = cursor.fetchone()
+                        if result:
+                            employee_id = result[0]
+                            logger.info(f"Generated employee_id: {employee_id} for user {username}")
+                        else:
+                            # Fallback if function doesn't work
+                            employee_id = f"{role.upper()}_01"
+                            logger.warning(f"Using fallback employee_id: {employee_id} for user {username}")
+                    except Exception as e:
+                        logger.error(f"Failed to generate employee_id: {e}")
+                        # Fallback employee_id
+                        employee_id = f"{role.upper()}_01"
+                        logger.info(f"Using fallback employee_id: {employee_id} for user {username}")
                 
-                # Find the next available ID (fill gaps)
+                # Insert or update user
                 cursor.execute("""
-                    SELECT COALESCE(
-                        (SELECT MIN(t.id + 1) 
-                         FROM (SELECT id FROM users ORDER BY id) t 
-                         WHERE NOT EXISTS (
-                             SELECT 1 FROM users u WHERE u.id = t.id + 1
-                         )
-                        ), 
-                        (SELECT COALESCE(MAX(id), 0) + 1 FROM users)
-                    ) as next_id
-                """)
-                next_id = cursor.fetchone()[0]
-                
-                cursor.execute("""
-                    INSERT INTO users (id, username, ldap_dn, role, authorization_level, employee_id)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO users (username, ldap_dn, role, authorization_level, employee_id)
+                    VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (username) DO UPDATE SET
                         ldap_dn = EXCLUDED.ldap_dn,
                         role = EXCLUDED.role,
@@ -262,54 +321,52 @@ class DatabaseService:
                         employee_id = EXCLUDED.employee_id,
                         updated_at = NOW()
                     RETURNING id
-                """, (next_id, username, ldap_dn, role, authorization_level, employee_id))
+                """, (username, ldap_dn, role, authorization_level, employee_id))
                 result = cursor.fetchone()
                 user_id = result[0] if result else 0
                 
-                # Update the sequence to the used ID
-                cursor.execute("SELECT setval('users_id_seq', %s)", (user_id,))
-                
                 # Add to role-specific table if needed
-                if role == 'operator':
-                    self._upsert_operator(cursor, username, employee_id, authorization_level)
-                elif role == 'personnel':
-                    self._upsert_personnel(cursor, username, employee_id, authorization_level)
+                try:
+                    if role == 'operator':
+                        self._upsert_operator(cursor, username, employee_id, authorization_level)
+                        logger.info(f"Added {username} to operators table with employee_id {employee_id}")
+                    elif role == 'personnel':
+                        self._upsert_personnel(cursor, username, employee_id, authorization_level)
+                        logger.info(f"Added {username} to personnel table with employee_id {employee_id}")
+                except Exception as e:
+                    logger.error(f"Failed to add user to role-specific table: {e}")
+                    # Don't fail the entire transaction for role-specific table issues
+                    # Just log the error and continue
                 
                 conn.commit()
-                logger.info(f"Upserted user {username} with ID {user_id} and employee_id {employee_id}")
+                logger.info(f"Successfully upserted user {username} with ID {user_id} and employee_id {employee_id}")
                 return user_id
         except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"Failed to rollback transaction: {rollback_error}")
             logger.error(f"Failed to upsert user: {e}")
             raise
+        finally:
+            if conn:
+                try:
+                    conn.autocommit = True
+                except Exception as autocommit_error:
+                    logger.error(f"Failed to set autocommit: {autocommit_error}")
 
     def _upsert_operator(self, cursor, username: str, employee_id: str, access_level: int):
         """Upsert operator in operators table"""
         try:
-            # Find the next available ID (fill gaps)
             cursor.execute("""
-                SELECT COALESCE(
-                    (SELECT MIN(t.id + 1) 
-                     FROM (SELECT id FROM operators ORDER BY id) t 
-                     WHERE NOT EXISTS (
-                         SELECT 1 FROM operators o WHERE o.id = t.id + 1
-                     )
-                    ), 
-                    (SELECT COALESCE(MAX(id), 0) + 1 FROM operators)
-                ) as next_id
-            """)
-            next_id = cursor.fetchone()[0]
-            
-            cursor.execute("""
-                INSERT INTO operators (id, username, employee_id, full_name, access_level)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO operators (username, employee_id, full_name, access_level)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (username) DO UPDATE SET
                     employee_id = EXCLUDED.employee_id,
                     access_level = EXCLUDED.access_level,
                     updated_at = NOW()
-            """, (next_id, username, employee_id, username, access_level))
-            
-            # Update the sequence to the used ID
-            cursor.execute("SELECT setval('operators_id_seq', %s)", (next_id,))
+            """, (username, employee_id, username, access_level))
         except Exception as e:
             logger.error(f"Failed to upsert operator: {e}")
             raise
@@ -317,31 +374,14 @@ class DatabaseService:
     def _upsert_personnel(self, cursor, username: str, employee_id: str, access_level: int):
         """Upsert personnel in personnel table"""
         try:
-            # Find the next available ID (fill gaps)
             cursor.execute("""
-                SELECT COALESCE(
-                    (SELECT MIN(t.id + 1) 
-                     FROM (SELECT id FROM personnel ORDER BY id) t 
-                     WHERE NOT EXISTS (
-                         SELECT 1 FROM personnel p WHERE p.id = t.id + 1
-                     )
-                    ), 
-                    (SELECT COALESCE(MAX(id), 0) + 1 FROM personnel)
-                ) as next_id
-            """)
-            next_id = cursor.fetchone()[0]
-            
-            cursor.execute("""
-                INSERT INTO personnel (id, username, employee_id, full_name, access_level)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO personnel (username, employee_id, full_name, access_level)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (username) DO UPDATE SET
                     employee_id = EXCLUDED.employee_id,
                     access_level = EXCLUDED.access_level,
                     updated_at = NOW()
-            """, (next_id, username, employee_id, username, access_level))
-            
-            # Update the sequence to the used ID
-            cursor.execute("SELECT setval('personnel_id_seq', %s)", (next_id,))
+            """, (username, employee_id, username, access_level))
         except Exception as e:
             logger.error(f"Failed to upsert personnel: {e}")
             raise
@@ -351,6 +391,9 @@ class DatabaseService:
         """Record an admin action for audit trail"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot record admin action for {admin_username}: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 cursor.execute("""
                     INSERT INTO admin_actions (admin_username, target_username, action_type, action_details, ip_address)
@@ -367,6 +410,9 @@ class DatabaseService:
         """Get login attempts for a user or all users"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot get login attempts for {username}: database connection failed.")
+                return []
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 if username:
                     cursor.execute("""
@@ -390,6 +436,9 @@ class DatabaseService:
         """Get comprehensive user statistics"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot get user stats for {username}: database connection failed.")
+                return {}
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 # Get user info
                 cursor.execute("""
@@ -432,6 +481,9 @@ class DatabaseService:
         """Sync LDAP users to database permanently"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot sync LDAP users to database: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 for user in ldap_users:
                     cursor.execute("""
@@ -459,6 +511,9 @@ class DatabaseService:
         """Get all users from database with employee IDs"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot get all users: database connection failed.")
+                return []
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     SELECT username, ldap_dn, role, authorization_level, employee_id, is_active,
@@ -476,6 +531,9 @@ class DatabaseService:
         """Get all operators from operators table"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot get operators: database connection failed.")
+                return []
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     SELECT o.username, o.employee_id, o.full_name, o.department, o.supervisor, 
@@ -495,6 +553,9 @@ class DatabaseService:
         """Get all personnel from personnel table"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot get personnel: database connection failed.")
+                return []
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     SELECT p.username, p.employee_id, p.full_name, p.department, p.position,
@@ -514,6 +575,9 @@ class DatabaseService:
         """Get user by employee ID"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot get user by employee ID {employee_id}: database connection failed.")
+                return {}
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
                 cursor.execute("""
                     SELECT username, role, authorization_level, employee_id, created_at, last_login_at, login_count
@@ -530,6 +594,9 @@ class DatabaseService:
         """Remove a user from database"""
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot remove user {username} from database: database connection failed.")
+                return
             with conn.cursor() as cursor:
                 cursor.execute("""
                     DELETE FROM users WHERE username = %s
@@ -542,8 +609,24 @@ class DatabaseService:
 
     def remove_user_completely(self, username: str):
         """Remove a user and all related data from database"""
+        conn = None
         try:
             conn = self.get_connection()
+            if conn is None:
+                logger.error(f"Cannot completely remove user {username}: database connection failed.")
+                return
+            
+            # Get a fresh connection to avoid transaction issues
+            if conn.get_transaction_status() != extensions.TRANSACTION_STATUS_IDLE:
+                logger.info(f"Resetting connection for user removal {username} due to transaction status")
+                conn.close()
+                conn = self.get_connection()
+                if conn is None:
+                    logger.error(f"Cannot get fresh connection for user removal {username}")
+                    return
+            
+            conn.autocommit = False  # Start transaction
+            
             with conn.cursor() as cursor:
                 # Delete related data first (due to foreign key constraints)
                 cursor.execute("DELETE FROM login_attempts WHERE username = %s", (username,))
@@ -561,8 +644,19 @@ class DatabaseService:
                 conn.commit()
                 logger.info(f"Completely removed user {username} and all related data from database")
         except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"Failed to rollback transaction: {rollback_error}")
             logger.error(f"Failed to completely remove user from database: {e}")
             raise
+        finally:
+            if conn:
+                try:
+                    conn.autocommit = True
+                except Exception as autocommit_error:
+                    logger.error(f"Failed to set autocommit: {autocommit_error}")
 
 # Global database service instance
 db_service = DatabaseService() 

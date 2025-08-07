@@ -8,6 +8,7 @@ CREATE EXTENSION IF NOT EXISTS timescaledb;
 CREATE SEQUENCE IF NOT EXISTS admin_id_seq START 1;
 CREATE SEQUENCE IF NOT EXISTS operator_id_seq START 1;
 CREATE SEQUENCE IF NOT EXISTS personnel_id_seq START 1;
+CREATE SEQUENCE IF NOT EXISTS users_id_seq START 1;
 
 -- Users table (for future non-LDAP users and metadata)
 CREATE TABLE users (
@@ -176,10 +177,14 @@ BEGIN
             SELECT nextval('admin_id_seq') INTO next_id;
     END CASE;
     
-    -- Format the result
+    -- Format the result with leading zeros
     result := prefix || LPAD(next_id::TEXT, 2, '0');
     
     RETURN result;
+EXCEPTION
+    WHEN OTHERS THEN
+        -- If sequence doesn't exist or other error, return a fallback
+        RETURN prefix || '01';
 END;
 $$ LANGUAGE plpgsql;
 

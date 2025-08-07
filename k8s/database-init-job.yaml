@@ -3,20 +3,15 @@ kind: Job
 metadata:
   name: database-init-job
   namespace: ldap-jwt-app
-  labels:
-    app: database-init
 spec:
-  backoffLimit: 5
+  backoffLimit: 3
   template:
-    metadata:
-      labels:
-        app: database-init
     spec:
-      restartPolicy: OnFailure
       containers:
-      - name: database-init
+      - name: db-init
         image: ldap-jwt-backend:latest
         imagePullPolicy: Never
+        command: ["python", "apply_schema.py"]
         env:
         - name: DB_HOST
           value: "timescaledb-service"
@@ -25,20 +20,14 @@ spec:
         - name: DB_NAME
           value: "auth_metadata"
         - name: DB_USER
-          valueFrom:
-            secretKeyRef:
-              name: app-secrets
-              key: DB_USER
+          value: "postgres"
         - name: DB_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: app-secrets
-              key: DB_PASSWORD
-        command: ["python", "/app/apply_schema.py"]
+          value: "auth_metadata_pass"
         resources:
           requests:
             memory: "128Mi"
             cpu: "100m"
           limits:
             memory: "256Mi"
-            cpu: "200m" 
+            cpu: "200m"
+      restartPolicy: Never 

@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY database_service.py .
 COPY apply_schema.py .
+COPY verify-database.py .
 COPY database_schema.sql .
 COPY .env* ./
 

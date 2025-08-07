@@ -73,6 +73,15 @@ cipher_suite = Fernet(fernet_key)
 
 app = FastAPI()
 
+# Configure CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, specify your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # JWT Configuration
 ACCESS_TOKEN_EXPIRE_HOURS = 1  # 1 hour for access tokens
 REFRESH_TOKEN_EXPIRE_DAYS = 7  # 7 days for refresh tokens
@@ -351,13 +360,13 @@ def user_exists_in_ldap(username: str) -> bool:
         return False
 
 # Enable CORS for React frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for development/tunneling
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["*"],  # Allow all origins for development/tunneling
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 
 LDAP_SERVER = os.environ.get("LDAP_SERVER", "ldap://localhost:389")
 LDAP_BASE_DN = os.environ.get("LDAP_BASE_DN", "ou=users,dc=example,dc=com")
@@ -378,12 +387,12 @@ def get_next_employee_id(role: str, conn=None) -> str:
     except Exception as e:
         print(f"Error getting next employee ID: {e}")
         # Fallback to simple generation
-    role_prefixes = {
-        "admin": "ADMIN_",
-        "operator": "OP_",
-        "personnel": "PER_"
-    }
-    prefix = role_prefixes.get(role, "USER_")
+        role_prefixes = {
+            "admin": "ADMIN_",
+            "operator": "OP_",
+            "personnel": "PER_"
+        }
+        prefix = role_prefixes.get(role, "USER_")
         return f"{prefix}01"
 
 class User(BaseModel):
@@ -392,19 +401,34 @@ class User(BaseModel):
 
 def get_jwt_payload(request: Request):
     """Extract and verify JWT payload from request header"""
-    token = request.headers.get("authorization")
-    print(f"DEBUG: Authorization header: {token}")
-    if not token or not token.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
-    token = token.split(" ", 1)[1]
-    print(f"DEBUG: Extracted token: {token[:20]}..." if token else "DEBUG: Token is empty")
-    return verify_access_token(token)
+    try:
+        token = request.headers.get("authorization")
+        print(f"DEBUG: Authorization header: {token}")
+        if not token or not token.lower().startswith("bearer "):
+            raise HTTPException(status_code=401, detail="Missing or invalid authorization header")
+        token = token.split(" ", 1)[1]
+        print(f"DEBUG: Extracted token: {token[:20]}..." if token else "DEBUG: Token is empty")
+        return verify_access_token(token)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"DEBUG: Error in get_jwt_payload: {e}")
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 def require_admin(request: Request):
-    payload = get_jwt_payload(request)
-    if payload.get("role") != "admin":
+    """Require admin role for access"""
+    try:
+        payload = get_jwt_payload(request)
+        print(f"DEBUG: JWT payload: {payload}")
+        if payload.get("role") != "admin":
+            print(f"DEBUG: User role is {payload.get('role')}, admin required")
+            raise HTTPException(status_code=403, detail="Admin access required")
+        return payload
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"DEBUG: Error in require_admin: {e}")
         raise HTTPException(status_code=403, detail="Admin access required")
-    return payload
 
 @app.post("/login")
 def login(username: str = Form(...), password: str = Form(...)):
@@ -708,42 +732,67 @@ def verify_token(token: str = Form(...)):
 
 @app.get("/admin/users")
 def list_users(payload: dict = Depends(require_admin)):
-    server = Server(LDAP_SERVER, get_info=ALL)
-    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
-    conn.search(
-        search_base=LDAP_BASE_DN,
-        search_filter="(objectClass=inetOrgPerson)",
-        attributes=["uid", "cn", "mail", "employeeType", "employeeNumber", "description"]
-    )
-    users = []
-    for entry in conn.entries:
-        # Parse authorization level from description field
-        auth_level = None
-        if "description" in entry and entry.description.value:
-            desc = entry.description.value
-            if desc.startswith("auth_level:"):
-                try:
-                    auth_level = int(desc.split(":")[1])
-                except (ValueError, IndexError):
-                    auth_level = None
+    """Get all users from LDAP with employee IDs from database - Admin only"""
+    try:
+        print("DEBUG: Admin users endpoint called")
+        server = Server(LDAP_SERVER, get_info=ALL)
+        conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
         
-        users.append({
-            "uid": entry.uid.value,
-            "cn": entry.cn.value,
-            "mail": entry.mail.value if "mail" in entry else None,
-            "role": entry.employeeType.value if "employeeType" in entry else None,
-            "employee_id": entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None,
-            "authorization_level": auth_level
-        })
-    return {"users": users}
+        conn.search(
+            search_base=LDAP_BASE_DN,
+            search_filter="(objectClass=inetOrgPerson)",
+            attributes=["uid", "cn", "employeeType", "description", "employeeNumber"]
+        )
+        
+        users = []
+        for entry in conn.entries:
+            auth_level = 1
+            if "description" in entry and entry.description.value:
+                desc = entry.description.value
+                if desc.startswith("auth_level:"):
+                    try:
+                        auth_level = int(desc.split(":")[1])
+                    except (ValueError, IndexError):
+                        auth_level = 1
+            
+            # Get employee_id from database
+            employee_id = None
+            try:
+                db_conn = db_service.get_connection()
+                if db_conn:
+                    with db_conn.cursor() as cursor:
+                        cursor.execute("SELECT employee_id FROM users WHERE username = %s", (entry.uid.value,))
+                        result = cursor.fetchone()
+                        if result:
+                            employee_id = result[0]
+            except Exception as e:
+                print(f"DEBUG: Error getting employee_id for {entry.uid.value}: {e}")
+            
+            users.append({
+                "uid": entry.uid.value,
+                "cn": entry.cn.value,
+                "role": entry.employeeType.value if "employeeType" in entry else "user",
+                "authorization_level": auth_level,
+                "employee_id": employee_id
+            })
+        
+        print(f"DEBUG: Found {len(users)} users")
+        return {"users": users}
+        
+    except Exception as e:
+        print(f"DEBUG: Error in list_users: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get users: {str(e)}")
 
 @app.get("/admin/users-db")
 def list_users_from_db(payload: dict = Depends(require_admin)):
-    """Get all users from database (includes both LDAP and local users)"""
+    """Get all users from database - Admin only"""
     try:
+        print("DEBUG: Admin users-db endpoint called")
         users = db_service.get_all_users()
+        print(f"DEBUG: Found {len(users)} users in database")
         return {"users": users}
     except Exception as e:
+        print(f"DEBUG: Error in list_users_from_db: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get users from database: {str(e)}")
 
 @app.post("/admin/sync-ldap-users")
@@ -798,138 +847,97 @@ def reset_password(username: str = Form(...), new_password: str = Form(...), pay
     return {"message": f"Password reset for {username}"}
 
 @app.post("/admin/change-role")
-def change_role(username: str = Form(...), new_role: str = Form(...), payload: dict = Depends(require_admin)):
+def change_role(username: str = Form(...), new_role: str = Form(...), payload: dict = Depends(require_admin), request: Request = None):
     """Change user role in both LDAP and database"""
     try:
-        print(f"Starting role change for {username} from current role to {new_role}")
+        print(f"🔄 Starting role change for {username} to {new_role}")
         
-        # Update LDAP
-    user_dn = f"uid={username},{LDAP_BASE_DN}"
-    server = Server(LDAP_SERVER, get_info=ALL)
-    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
-    success = conn.modify(user_dn, {"employeeType": [(MODIFY_REPLACE, [new_role])]})
-    if not success:
+        # Update LDAP first
+        user_dn = f"uid={username},{LDAP_BASE_DN}"
+        server = Server(LDAP_SERVER, get_info=ALL)
+        conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+        success = conn.modify(user_dn, {"employeeType": [(MODIFY_REPLACE, [new_role])]})
+        if not success:
             raise HTTPException(status_code=400, detail="Failed to change role in LDAP")
         
-        # Update database
-        db_conn = db_service.get_connection()
-        with db_conn.cursor() as cursor:
-            # Get current user info
-            cursor.execute("SELECT role, authorization_level, employee_id FROM users WHERE username = %s", (username,))
-            user = cursor.fetchone()
-            
-            if not user:
-                raise HTTPException(status_code=404, detail="User not found in database")
-            
-            current_role, auth_level, employee_id = user
-            print(f"Current role: {current_role}, New role: {new_role}")
-            
-            # If the role is the same, just update the employee_id and return
-            if current_role == new_role:
-                print(f"Role is the same ({current_role}), updating employee_id only")
-                # Generate new employee ID for the same role
-                cursor.execute("SELECT get_next_employee_id(%s)", (new_role,))
-                new_employee_id = cursor.fetchone()[0]
-                print(f"Generated new employee ID: {new_employee_id} for user {username}")
+        print(f"✅ Successfully updated role in LDAP for {username}")
+        
+        # Update database using the simplified database service
+        try:
+            # Get current user info from database
+            db_conn = db_service.get_connection()
+            with db_conn.cursor() as cursor:
+                cursor.execute("SELECT role, authorization_level, employee_id FROM users WHERE username = %s", (username,))
+                user = cursor.fetchone()
                 
-                # Update employee_id in users table
-                cursor.execute("UPDATE users SET employee_id = %s, updated_at = NOW() WHERE username = %s", (new_employee_id, username))
-                print(f"Updated employee_id in users table for {username}")
+                if not user:
+                    raise HTTPException(status_code=404, detail="User not found in database")
                 
-                # Update employee_id in the role table
+                current_role, auth_level, old_employee_id = user
+                print(f"📊 Current role: {current_role}, New role: {new_role}, Current employee_id: {old_employee_id}")
+                
+                # Generate new employee ID for the new role
+                try:
+                    cursor.execute("SELECT get_next_employee_id(%s)", (new_role,))
+                    result = cursor.fetchone()
+                    if result:
+                        new_employee_id = result[0]
+                        print(f"✅ Generated new employee_id: {new_employee_id} for user {username}")
+                    else:
+                        # Fallback if function doesn't work
+                        new_employee_id = f"{new_role.upper()}_01"
+                        print(f"⚠️ Using fallback employee_id: {new_employee_id} for user {username}")
+                except Exception as e:
+                    print(f"❌ Error generating employee_id: {e}")
+                    # Fallback employee_id
+                    new_employee_id = f"{new_role.upper()}_01"
+                    print(f"⚠️ Using fallback employee_id: {new_employee_id} for user {username}")
+                
+                # Update user role and employee_id in users table
+                cursor.execute("UPDATE users SET role = %s, employee_id = %s, updated_at = NOW() WHERE username = %s", 
+                             (new_role, new_employee_id, username))
+                print(f"✅ Updated role and employee_id in users table for {username}")
+                
+                # Remove from old role table
+                if current_role == 'operator':
+                    cursor.execute("DELETE FROM operators WHERE username = %s", (username,))
+                    print(f"✅ Removed {username} from operators table")
+                elif current_role == 'personnel':
+                    cursor.execute("DELETE FROM personnel WHERE username = %s", (username,))
+                    print(f"✅ Removed {username} from personnel table")
+                
+                # Add to new role table using database service
                 if new_role == 'operator':
-                    cursor.execute("UPDATE operators SET employee_id = %s, updated_at = NOW() WHERE username = %s", (new_employee_id, username))
+                    db_service._upsert_operator(cursor, username, new_employee_id, auth_level)
+                    print(f"✅ Added {username} to operators table")
                 elif new_role == 'personnel':
-                    cursor.execute("UPDATE personnel SET employee_id = %s, updated_at = NOW() WHERE username = %s", (new_employee_id, username))
+                    db_service._upsert_personnel(cursor, username, new_employee_id, auth_level)
+                    print(f"✅ Added {username} to personnel table")
                 
                 db_conn.commit()
-                return {"message": f"Employee ID updated for {username} in {new_role} role"}
-            
-            # Update user role in database
-            cursor.execute("UPDATE users SET role = %s, updated_at = NOW() WHERE username = %s", (new_role, username))
-            print(f"Updated role in users table for {username}")
-            
-            # Remove from old role table
-            if current_role == 'operator':
-                cursor.execute("DELETE FROM operators WHERE username = %s", (username,))
-                print(f"Removed {username} from operators table")
-            elif current_role == 'personnel':
-                cursor.execute("DELETE FROM personnel WHERE username = %s", (username,))
-                print(f"Removed {username} from personnel table")
-            
-            # Generate new employee ID for the new role
-            cursor.execute("SELECT get_next_employee_id(%s)", (new_role,))
-            new_employee_id = cursor.fetchone()[0]
-            print(f"Generated new employee ID: {new_employee_id} for user {username}")
-            
-            # Update employee_id in users table
-            cursor.execute("UPDATE users SET employee_id = %s WHERE username = %s", (new_employee_id, username))
-            print(f"Updated employee_id in users table for {username}")
-            
-            # Add to new role table with gap-filling
-            if new_role == 'operator':
-                # Find next available ID for operators table
-                cursor.execute("""
-                    SELECT COALESCE(
-                        (SELECT MIN(t.id + 1) 
-                         FROM (SELECT id FROM operators ORDER BY id) t 
-                         WHERE NOT EXISTS (
-                             SELECT 1 FROM operators o WHERE o.id = t.id + 1
-                         )
-                        ), 
-                        (SELECT COALESCE(MAX(id), 0) + 1 FROM operators)
-                    ) as next_id
-                """)
-                next_id = cursor.fetchone()[0]
-                print(f"Next ID for operators table: {next_id}")
+                print(f"✅ Successfully committed database changes for {username}")
                 
-                cursor.execute("""
-                    INSERT INTO operators (id, username, employee_id, full_name, access_level)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (username) DO UPDATE SET
-                        employee_id = EXCLUDED.employee_id,
-                        access_level = EXCLUDED.access_level,
-                        updated_at = NOW()
-                """, (next_id, username, new_employee_id, username, auth_level))
-                print(f"Inserted {username} into operators table")
+                # Record admin action
+                client_ip = request.client.host if request and request.client else None
+                db_service.record_admin_action(
+                    admin_username=payload.get("sub"),
+                    action_type="change_role",
+                    target_username=username,
+                    action_details={
+                        "old_role": current_role,
+                        "new_role": new_role,
+                        "old_employee_id": old_employee_id,
+                        "new_employee_id": new_employee_id
+                    },
+                    ip_address=client_ip
+                )
                 
-                # Update the sequence
-                cursor.execute("SELECT setval('operators_id_seq', %s)", (next_id,))
+                return {"message": f"Role changed for {username} from {current_role} to {new_role} with employee ID {new_employee_id}"}
                 
-            elif new_role == 'personnel':
-                # Find next available ID for personnel table
-                cursor.execute("""
-                    SELECT COALESCE(
-                        (SELECT MIN(t.id + 1) 
-                         FROM (SELECT id FROM personnel ORDER BY id) t 
-                         WHERE NOT EXISTS (
-                             SELECT 1 FROM personnel p WHERE p.id = t.id + 1
-                         )
-                        ), 
-                        (SELECT COALESCE(MAX(id), 0) + 1 FROM personnel)
-                    ) as next_id
-                """)
-                next_id = cursor.fetchone()[0]
-                print(f"Next ID for personnel table: {next_id}")
-                
-                cursor.execute("""
-                    INSERT INTO personnel (id, username, employee_id, full_name, access_level)
-                    VALUES (%s, %s, %s, %s, %s)
-                    ON CONFLICT (username) DO UPDATE SET
-                        employee_id = EXCLUDED.employee_id,
-                        access_level = EXCLUDED.access_level,
-                        updated_at = NOW()
-                """, (next_id, username, new_employee_id, username, auth_level))
-                print(f"Inserted {username} into personnel table")
-                
-                # Update the sequence
-                cursor.execute("SELECT setval('personnel_id_seq', %s)", (next_id,))
+        except Exception as e:
+            print(f"❌ Error updating database: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to update database: {str(e)}")
             
-            db_conn.commit()
-            print(f"Successfully changed role for {username} from {current_role} to {new_role}")
-        
-        return {"message": f"Role changed for {username} to {new_role} in both LDAP and database"}
-        
     except HTTPException:
         raise
     except Exception as e:
@@ -944,20 +952,21 @@ def change_authorization_level(
     """Change user authorization level in both LDAP and database"""
     try:
         print(f"Starting auth level change for {username} to level {authorization_level}")
-    # Validate authorization level
-    if authorization_level < 1 or authorization_level > 5:
-        raise HTTPException(status_code=400, detail="Authorization level must be between 1 and 5")
-    
+        
+        # Validate authorization level
+        if authorization_level < 1 or authorization_level > 5:
+            raise HTTPException(status_code=400, detail="Authorization level must be between 1 and 5")
+        
         # Update LDAP
-    user_dn = f"uid={username},{LDAP_BASE_DN}"
-    server = Server(LDAP_SERVER, get_info=ALL)
-    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
-    
-    # Store authorization level in description field
-    auth_level_desc = f"auth_level:{authorization_level}"
-    success = conn.modify(user_dn, {"description": [(MODIFY_REPLACE, [auth_level_desc])]})
-    
-    if not success:
+        user_dn = f"uid={username},{LDAP_BASE_DN}"
+        server = Server(LDAP_SERVER, get_info=ALL)
+        conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+        
+        # Store authorization level in description field
+        auth_level_desc = f"auth_level:{authorization_level}"
+        success = conn.modify(user_dn, {"description": [(MODIFY_REPLACE, [auth_level_desc])]})
+        
+        if not success:
             raise HTTPException(status_code=400, detail="Failed to change authorization level in LDAP")
         
         # Update database
@@ -1119,10 +1128,8 @@ def create_user(
     server = Server(LDAP_SERVER, get_info=ALL)
     conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
     
-    # Generate the next employee ID
-    employee_id = get_next_employee_id(role, conn)
-    
     try:
+        # Create user in LDAP first
         conn.add(
             user_dn,
             ["inetOrgPerson", "top"],
@@ -1138,19 +1145,48 @@ def create_user(
         if not conn.result["description"] == "success":
             raise Exception(conn.result["description"])
         
+        print(f"✅ Successfully created user {username} in LDAP")
+        
         # Sync the new user to database with persistent employee ID
         try:
-            db_service.upsert_user(
+            # Generate employee_id first
+            employee_id = None
+            try:
+                # Try to get employee_id from database function
+                db_conn = db_service.get_connection()
+                if db_conn:
+                    with db_conn.cursor() as cursor:
+                        cursor.execute("SELECT get_next_employee_id(%s)", (role,))
+                        result = cursor.fetchone()
+                        if result:
+                            employee_id = result[0]
+                            print(f"✅ Generated employee_id: {employee_id} for user {username}")
+                        else:
+                            # Fallback employee_id
+                            employee_id = f"{role.upper()}_01"
+                            print(f"⚠️ Using fallback employee_id: {employee_id} for user {username}")
+                else:
+                    # Fallback employee_id if no database connection
+                    employee_id = f"{role.upper()}_01"
+                    print(f"⚠️ Using fallback employee_id: {employee_id} for user {username} (no DB connection)")
+            except Exception as e:
+                print(f"⚠️ Error generating employee_id: {e}")
+                # Fallback employee_id
+                employee_id = f"{role.upper()}_01"
+                print(f"⚠️ Using fallback employee_id: {employee_id} for user {username}")
+            
+            # Use database service to create user with the generated employee_id
+            user_id = db_service.upsert_user(
                 username=username,
                 ldap_dn=user_dn,
                 role=role,
                 authorization_level=authorization_level,
                 employee_id=employee_id
             )
-            print(f"Successfully synced user {username} to database with employee_id {employee_id}")
+            
+            print(f"✅ Successfully synced user {username} to database with employee_id {employee_id}")
             
             # Record admin action
-            client_ip = request.client.host if request and request.client else None
             db_service.record_admin_action(
                 admin_username=payload.get("sub"),  # Use "sub" from JWT payload
                 action_type="create_user",
@@ -1160,14 +1196,18 @@ def create_user(
                     "authorization_level": authorization_level,
                     "employee_id": employee_id
                 },
-                ip_address=client_ip
+                ip_address=request.client.host if request else None
             )
+            print(f"✅ Successfully recorded admin action for user {username}")
+            
+            return {"message": f"User {username} created successfully with authorization level {authorization_level} and employee ID {employee_id}"}
+            
         except Exception as e:
-            print(f"Error: Failed to sync new user to database: {e}")
+            print(f"❌ Error: Failed to sync new user to database: {e}")
             # Don't fail the entire operation, but log the error
             # The user was created in LDAP successfully
-        
-        return {"message": f"User {username} created with authorization level {authorization_level}"}
+            return {"message": f"User {username} created in LDAP but database sync failed: {str(e)}"}
+            
     except LDAPEntryAlreadyExistsResult:
         raise HTTPException(status_code=400, detail="User already exists")
     except Exception as e:
@@ -1179,30 +1219,51 @@ def delete_user(
     payload: dict = Depends(require_admin),
     request: Request = None,
 ):
-    user_dn = f"uid={username},{LDAP_BASE_DN}"
-    server = Server(LDAP_SERVER, get_info=ALL)
-    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
-    success = conn.delete(user_dn)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to delete user")
-    
-    # Remove user from database and related data
     try:
-        db_service.remove_user_completely(username)
+        # First, get user info from database for audit
+        db_conn = db_service.get_connection()
+        with db_conn.cursor() as cursor:
+            cursor.execute("SELECT role, employee_id FROM users WHERE username = %s", (username,))
+            user_info = cursor.fetchone()
         
-        # Record admin action
-        client_ip = request.client.host if request and request.client else None
-        db_service.record_admin_action(
-            admin_username=payload.get("sub"),  # Use "sub" from JWT payload
-            action_type="delete_user",
-            target_username=username,
-            action_details={"user_dn": user_dn},
-            ip_address=client_ip
-        )
+        # Delete from LDAP
+        user_dn = f"uid={username},{LDAP_BASE_DN}"
+        server = Server(LDAP_SERVER, get_info=ALL)
+        conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+        success = conn.delete(user_dn)
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to delete user from LDAP")
+        
+        # Remove user from database and related data
+        try:
+            db_service.remove_user_completely(username)
+            print(f"Successfully removed user {username} from database")
+            
+            # Record admin action
+            client_ip = request.client.host if request and request.client else None
+            db_service.record_admin_action(
+                admin_username=payload.get("sub"),  # Use "sub" from JWT payload
+                action_type="delete_user",
+                target_username=username,
+                action_details={
+                    "user_dn": user_dn,
+                    "old_role": user_info[0] if user_info else None,
+                    "old_employee_id": user_info[1] if user_info else None
+                },
+                ip_address=client_ip
+            )
+            
+            return {"message": f"User {username} deleted from both LDAP and database"}
+            
+        except Exception as e:
+            print(f"Warning: Failed to remove user from database: {e}")
+            # Still return success since LDAP deletion worked
+            return {"message": f"User {username} deleted from LDAP but database cleanup failed: {str(e)}"}
+            
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Warning: Failed to remove user from database: {e}")
-    
-    return {"message": f"User {username} deleted"}
+        raise HTTPException(status_code=500, detail=f"Failed to delete user: {str(e)}")
 
 @app.get("/users/for-operator")
 def users_for_operator(request: Request):
@@ -1238,20 +1299,26 @@ def operator_count(request: Request):
 
 @app.get("/admin/operators")
 def get_operators(payload: dict = Depends(require_admin)):
-    """Get all operators from database"""
+    """Get all operators from database - Admin only"""
     try:
+        print("DEBUG: Admin operators endpoint called")
         operators = db_service.get_operators()
+        print(f"DEBUG: Found {len(operators)} operators")
         return {"operators": operators}
     except Exception as e:
+        print(f"DEBUG: Error in get_operators: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get operators: {str(e)}")
 
 @app.get("/admin/personnel")
 def get_personnel(payload: dict = Depends(require_admin)):
-    """Get all personnel from database"""
+    """Get all personnel from database - Admin only"""
     try:
+        print("DEBUG: Admin personnel endpoint called")
         personnel = db_service.get_personnel()
+        print(f"DEBUG: Found {len(personnel)} personnel")
         return {"personnel": personnel}
     except Exception as e:
+        print(f"DEBUG: Error in get_personnel: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get personnel: {str(e)}")
 
 @app.get("/admin/user/{employee_id}")
@@ -1343,6 +1410,7 @@ def create_user_with_validation(
     role: str = Form(...),
     authorization_level: int = Form(None),
     payload: dict = Depends(require_admin),
+    request: Request = None,
 ):
     """Create user with password validation"""
     
@@ -1371,10 +1439,8 @@ def create_user_with_validation(
     server = Server(LDAP_SERVER, get_info=ALL)
     conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
     
-    # Generate the next employee ID
-    employee_id = get_next_employee_id(role, conn)
-    
     try:
+        # Create user in LDAP first
         conn.add(
             user_dn,
             ["inetOrgPerson", "top"],
@@ -1390,16 +1456,46 @@ def create_user_with_validation(
         if not conn.result["description"] == "success":
             raise Exception(conn.result["description"])
         
+        print(f"✅ Successfully created user {username} in LDAP")
+        
         # Sync the new user to database with persistent employee ID
         try:
-            db_service.upsert_user(
+            # Generate employee_id first
+            employee_id = None
+            try:
+                # Try to get employee_id from database function
+                db_conn = db_service.get_connection()
+                if db_conn:
+                    with db_conn.cursor() as cursor:
+                        cursor.execute("SELECT get_next_employee_id(%s)", (role,))
+                        result = cursor.fetchone()
+                        if result:
+                            employee_id = result[0]
+                            print(f"✅ Generated employee_id: {employee_id} for user {username}")
+                        else:
+                            # Fallback employee_id
+                            employee_id = f"{role.upper()}_01"
+                            print(f"⚠️ Using fallback employee_id: {employee_id} for user {username}")
+                else:
+                    # Fallback employee_id if no database connection
+                    employee_id = f"{role.upper()}_01"
+                    print(f"⚠️ Using fallback employee_id: {employee_id} for user {username} (no DB connection)")
+            except Exception as e:
+                print(f"⚠️ Error generating employee_id: {e}")
+                # Fallback employee_id
+                employee_id = f"{role.upper()}_01"
+                print(f"⚠️ Using fallback employee_id: {employee_id} for user {username}")
+            
+            # Use database service to create user with the generated employee_id
+            user_id = db_service.upsert_user(
                 username=username,
                 ldap_dn=user_dn,
                 role=role,
                 authorization_level=authorization_level,
                 employee_id=employee_id
             )
-            print(f"Successfully synced user {username} to database with employee_id {employee_id}")
+            
+            print(f"✅ Successfully synced user {username} to database with employee_id {employee_id}")
             
             # Record admin action
             db_service.record_admin_action(
@@ -1410,15 +1506,19 @@ def create_user_with_validation(
                     "role": role,
                     "authorization_level": authorization_level,
                     "employee_id": employee_id
-                }
+                },
+                ip_address=request.client.host if request else None
             )
-            print(f"Successfully recorded admin action for user {username}")
+            print(f"✅ Successfully recorded admin action for user {username}")
+            
+            return {"message": f"User {username} created successfully with authorization level {authorization_level} and employee ID {employee_id}"}
+            
         except Exception as e:
-            print(f"Error: Failed to sync new user to database: {e}")
+            print(f"❌ Error: Failed to sync new user to database: {e}")
             # Don't fail the entire operation, but log the error
             # The user was created in LDAP successfully
-        
-        return {"message": f"User {username} created successfully with authorization level {authorization_level}"}
+            return {"message": f"User {username} created in LDAP but database sync failed: {str(e)}"}
+            
     except LDAPEntryAlreadyExistsResult:
         raise HTTPException(status_code=400, detail="User already exists")
     except Exception as e:
@@ -1437,3 +1537,13 @@ def get_password_requirements():
         ],
         "min_length": 8
     }
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "message": "Backend is running"}
+
+@app.get("/")
+def root():
+    """Root endpoint"""
+    return {"message": "LDAP-JWT Authentication Backend", "status": "running"}

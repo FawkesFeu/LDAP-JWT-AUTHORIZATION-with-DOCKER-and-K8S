@@ -56,7 +56,7 @@ kubectl logs job/database-init-job -n ldap-jwt-app
 
 # Additional wait to ensure database is fully initialized
 Write-Host "Waiting for database initialization to complete..." -ForegroundColor Cyan
-Start-Sleep 30
+Start-Sleep 10
 
 # Deploy LDAP server
 Write-Host "Deploying LDAP server..." -ForegroundColor Cyan
