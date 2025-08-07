@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: timescaledb-statefulset
+  namespace: ldap-jwt-app
+  labels:
+    app: timescaledb
+spec:
+  serviceName: timescaledb-service
+  replicas: 1
+  selector:
+    matchLabels:
+      app: timescaledb
+  template:
+    metadata:
+      labels:
+        app: timescaledb
+    spec:
+      containers:
+      - name: timescaledb
+        image: timescale/timescaledb:latest-pg15
+        ports:
+        - containerPort: 5432
+          name: postgresql
+        env:
+        - name: POSTGRES_DB
+          value: "auth_metadata"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: DB_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: DB_PASSWORD
+        - name: PGDATA
+          value: "/var/lib/postgresql/data/pgdata"
+        volumeMounts:
+        - name: timescaledb-data
+          mountPath: /var/lib/postgresql/data
+        - name: init-script
+          mountPath: /docker-entrypoint-initdb.d
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - postgres
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+      volumes:
+      - name: init-script
+        configMap:
+          name: timescaledb-init
+  volumeClaimTemplates:
+  - metadata:
+      name: timescaledb-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb-service
+  namespace: ldap-jwt-app
+  labels:
+    app: timescaledb
+spec:
+  selector:
+    app: timescaledb
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: 5432
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb-nodeport
+  namespace: ldap-jwt-app
+  labels:
+    app: timescaledb-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: timescaledb
+  ports:
+  - name: postgresql
+    port: 5432
+    targetPort: 5432
+    nodePort: 30432
+    protocol: TCP 

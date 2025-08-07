@@ -13,8 +13,56 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 import secrets
 import uuid
+from database_service import db_service
 
 load_dotenv()
+
+# Function to automatically sync LDAP users to database on startup
+def sync_ldap_users_on_startup():
+    """Sync LDAP users to database when the application starts"""
+    try:
+        print("Starting automatic LDAP user sync...")
+        server = Server(os.environ.get('LDAP_SERVER', 'ldap://ldap-service:389'), get_info=ALL)
+        conn = Connection(server, os.environ.get('LDAP_ADMIN_DN', 'cn=admin,dc=example,dc=com'), 
+                        os.environ.get('LDAP_ADMIN_PASS', 'admin123'), auto_bind=True)
+        
+        # Search for all users in LDAP
+        conn.search(
+            os.environ.get('LDAP_BASE_DN', 'ou=users,dc=example,dc=com'),
+            '(objectClass=inetOrgPerson)',
+            attributes=['uid', 'cn', 'employeeType', 'description']
+        )
+        
+        ldap_users = []
+        for entry in conn.entries:
+            auth_level = 1
+            if "description" in entry and entry.description.value:
+                desc = entry.description.value
+                if desc.startswith("auth_level:"):
+                    try:
+                        auth_level = int(desc.split(":")[1])
+                    except (ValueError, IndexError):
+                        auth_level = 1
+            
+            ldap_users.append({
+                "uid": entry.uid.value,
+                "dn": str(entry.entry_dn),
+                "cn": entry.cn.value,
+                "role": entry.employeeType.value if "employeeType" in entry else "user",
+                "authorization_level": auth_level
+            })
+        
+        if ldap_users:
+            db_service.sync_ldap_users_to_db(ldap_users)
+            print(f"✓ Successfully synced {len(ldap_users)} LDAP users to database")
+        else:
+            print("⚠ No LDAP users found to sync")
+            
+    except Exception as e:
+        print(f"⚠ Error during automatic LDAP sync: {e}")
+
+# Run automatic sync on startup
+sync_ldap_users_on_startup()
 
 JWE_SECRET_KEY = os.environ.get("JWE_SECRET_KEY", "thisIsA32ByteSecretKey1234567890!!")
 print("JWE_SECRET_KEY (len={}):".format(len(JWE_SECRET_KEY)), repr(JWE_SECRET_KEY))
@@ -34,13 +82,8 @@ LOCKOUT_THRESHOLD = 3  # Number of failed attempts before lockout
 LOCKOUT_DURATION = 30  # Lockout duration in seconds
 MAX_ATTEMPTS = 3  # Maximum failed attempts before lockout
 
-# In-memory storage for failed login attempts and lockouts
-# In production, use Redis or database for persistence
-failed_attempts: Dict[str, int] = {}
-lockout_times: Dict[str, datetime] = {}
-
-# In-memory storage for refresh tokens
-# In production, use Redis or database for persistence
+# Database service handles all storage now
+# Fallback in-memory storage for refresh tokens (used when database is unavailable)
 refresh_tokens: Dict[str, dict] = {}  # {token_id: {username, created_at, expires_at}}
 
 def generate_access_token(username: str, role: str) -> str:
@@ -65,13 +108,18 @@ def generate_refresh_token(username: str) -> tuple[str, str]:
     now = datetime.utcnow()
     expires_at = now + timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS)
     
-    # Store refresh token metadata
-    refresh_tokens[token_id] = {
-        "username": username,
-        "created_at": now,
-        "expires_at": expires_at,
-        "is_active": True
-    }
+    # Store refresh token metadata in database
+    try:
+        db_service.store_refresh_token(token_id, username, 'refresh', expires_at)
+    except Exception as e:
+        print(f"Error storing refresh token: {e}")
+        # Fallback to in-memory storage if database fails
+        refresh_tokens[token_id] = {
+            "username": username,
+            "created_at": now,
+            "expires_at": expires_at,
+            "is_active": True
+        }
     
     # Create the actual refresh token
     refresh_payload = {
@@ -117,20 +165,49 @@ def verify_refresh_token(encrypted_token: str) -> dict:
         if payload.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid token type")
             
-        # Check if refresh token exists and is active
+        # Check if refresh token exists and is active in database
         token_id = payload.get("jti")
-        if not token_id or token_id not in refresh_tokens:
+        if not token_id:
             raise HTTPException(status_code=401, detail="Refresh token not found")
+        
+        try:
+            # Try database first
+            active_tokens = db_service.get_active_refresh_tokens()
+            token_found = False
+            for token in active_tokens:
+                if token['token_id'] == token_id:
+                    token_found = True
+                    if not token['is_active']:
+                        raise HTTPException(status_code=401, detail="Refresh token revoked")
+                    if datetime.utcnow() > token['expires_at']:
+                        # Clean up expired token
+                        db_service.revoke_refresh_token(token_id)
+                        raise HTTPException(status_code=401, detail="Refresh token expired")
+                    break
             
-        token_data = refresh_tokens[token_id]
-        if not token_data["is_active"]:
-            raise HTTPException(status_code=401, detail="Refresh token revoked")
-            
-        # Check expiration
-        if datetime.utcnow() > token_data["expires_at"]:
-            # Clean up expired token
-            del refresh_tokens[token_id]
-            raise HTTPException(status_code=401, detail="Refresh token expired")
+            if not token_found:
+                # Fallback to in-memory check
+                if token_id not in refresh_tokens:
+                    raise HTTPException(status_code=401, detail="Refresh token not found")
+                token_data = refresh_tokens[token_id]
+                if not token_data["is_active"]:
+                    raise HTTPException(status_code=401, detail="Refresh token revoked")
+                if datetime.utcnow() > token_data["expires_at"]:
+                    del refresh_tokens[token_id]
+                    raise HTTPException(status_code=401, detail="Refresh token expired")
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"Database error in token verification: {e}")
+            # Fallback to in-memory verification
+            if token_id not in refresh_tokens:
+                raise HTTPException(status_code=401, detail="Refresh token not found")
+            token_data = refresh_tokens[token_id]
+            if not token_data["is_active"]:
+                raise HTTPException(status_code=401, detail="Refresh token revoked")
+            if datetime.utcnow() > token_data["expires_at"]:
+                del refresh_tokens[token_id]
+                raise HTTPException(status_code=401, detail="Refresh token expired")
             
         return payload
     except jwt.ExpiredSignatureError:
@@ -142,78 +219,117 @@ def verify_refresh_token(encrypted_token: str) -> dict:
 
 def revoke_refresh_token(token_id: str):
     """Revoke a refresh token"""
-    if token_id in refresh_tokens:
-        refresh_tokens[token_id]["is_active"] = False
+    try:
+        db_service.revoke_refresh_token(token_id)
+    except Exception as e:
+        print(f"Error revoking token in database: {e}")
+        # Fallback to in-memory revocation
+        if token_id in refresh_tokens:
+            refresh_tokens[token_id]["is_active"] = False
 
 def revoke_all_user_tokens(username: str):
     """Revoke all refresh tokens for a user"""
-    for token_id, token_data in refresh_tokens.items():
-        if token_data["username"] == username:
-            token_data["is_active"] = False
+    try:
+        db_service.revoke_all_user_tokens(username)
+    except Exception as e:
+        print(f"Error revoking all user tokens in database: {e}")
+        # Fallback to in-memory revocation
+        for token_id, token_data in refresh_tokens.items():
+            if token_data["username"] == username:
+                token_data["is_active"] = False
 
 def cleanup_expired_tokens():
     """Clean up expired refresh tokens"""
-    now = datetime.utcnow()
-    expired_tokens = [
-        token_id for token_id, token_data in refresh_tokens.items()
-        if now > token_data["expires_at"]
-    ]
-    for token_id in expired_tokens:
-        del refresh_tokens[token_id]
+    try:
+        db_service.cleanup_expired_tokens()
+    except Exception as e:
+        print(f"Error cleaning up expired tokens in database: {e}")
+        # Fallback to in-memory cleanup
+        now = datetime.utcnow()
+        expired_tokens = [
+            token_id for token_id, token_data in refresh_tokens.items()
+            if now > token_data["expires_at"]
+        ]
+        for token_id in expired_tokens:
+            del refresh_tokens[token_id]
 
 def is_account_locked(username: str) -> bool:
     """Check if an account is currently locked"""
-    if username not in lockout_times:
+    try:
+        lockout_status = db_service.get_user_lockout_status(username)
+        if lockout_status['is_locked'] and lockout_status['lockout_until']:
+            # Use timezone-aware datetime for comparison
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            if now < lockout_status['lockout_until']:
+                return True
+            else:
+                # Lockout has expired, unlock the user
+                db_service.unlock_user(username)
+                return False
         return False
-    
-    lockout_time = lockout_times[username]
-    current_time = datetime.now()
-    
-    # Check if lockout period has expired
-    if current_time > lockout_time + timedelta(seconds=LOCKOUT_DURATION):
-        # Lockout expired, clean up records
-        del lockout_times[username]
-        if username in failed_attempts:
-            del failed_attempts[username]
+    except Exception as e:
+        print(f"Error checking lockout status: {e}")
         return False
-    
-    return True
 
 def get_lockout_remaining_time(username: str) -> Optional[int]:
     """Get remaining lockout time in seconds"""
-    if username not in lockout_times:
+    try:
+        lockout_status = db_service.get_user_lockout_status(username)
+        if lockout_status['is_locked'] and lockout_status['lockout_until']:
+            # Use timezone-aware datetime for comparison
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+            remaining = (lockout_status['lockout_until'] - now).total_seconds()
+            if remaining > 0:
+                return int(remaining)
+            else:
+                # Lockout has expired, unlock the user
+                db_service.unlock_user(username)
         return None
-    
-    lockout_time = lockout_times[username]
-    current_time = datetime.now()
-    remaining = LOCKOUT_DURATION - (current_time - lockout_time).total_seconds()
-    
-    return int(max(0, remaining))
+    except Exception as e:
+        print(f"Error getting lockout remaining time: {e}")
+        return None
 
 def record_failed_attempt(username: str) -> bool:
     """Record a failed login attempt and return True if account should be locked"""
-    if username not in failed_attempts:
-        failed_attempts[username] = 0
-    
-    failed_attempts[username] += 1
-    
-    if failed_attempts[username] >= LOCKOUT_THRESHOLD:
-        # Lock the account
-        lockout_times[username] = datetime.now()
-        return True
-    
-    return False
+    try:
+        # Get current failed attempts count before recording new attempt
+        lockout_status = db_service.get_user_lockout_status(username)
+        current_failed_count = lockout_status['failed_attempts_count']
+        
+        # Record the failed attempt in database
+        db_service.record_login_attempt(username, 'failure')
+        
+        # Check if this attempt should trigger a lockout
+        new_failed_count = current_failed_count + 1
+        
+        if new_failed_count >= LOCKOUT_THRESHOLD:
+            # Lock the account
+            from datetime import timezone
+            lockout_until = datetime.now(timezone.utc) + timedelta(seconds=LOCKOUT_DURATION)
+            db_service.set_user_lockout(username, lockout_until)
+            return True
+        return False
+    except Exception as e:
+        print(f"Error recording failed attempt: {e}")
+        return False
 
 def reset_failed_attempts(username: str):
-    """Reset failed attempts counter for successful login"""
-    if username in failed_attempts:
-        del failed_attempts[username]
-    if username in lockout_times:
-        del lockout_times[username]
+    """Reset failed attempts for a user (called on successful login)"""
+    try:
+        db_service.unlock_user(username)
+    except Exception as e:
+        print(f"Error resetting failed attempts: {e}")
 
 def get_failed_attempts_count(username: str) -> int:
-    """Get current failed attempts count for a user"""
-    return failed_attempts.get(username, 0)
+    """Get the number of failed attempts for a user"""
+    try:
+        lockout_status = db_service.get_user_lockout_status(username)
+        return lockout_status['failed_attempts_count']
+    except Exception as e:
+        print(f"Error getting failed attempts count: {e}")
+        return 0
 
 def user_exists_in_ldap(username: str) -> bool:
     """Check if a user exists in LDAP directory"""
@@ -248,42 +364,27 @@ LDAP_BASE_DN = os.environ.get("LDAP_BASE_DN", "ou=users,dc=example,dc=com")
 LDAP_ADMIN_DN = os.environ.get("LDAP_ADMIN_DN", "cn=admin,dc=example,dc=com")
 LDAP_ADMIN_PASS = os.environ.get("LDAP_ADMIN_PASS", "admin")
 
-def get_next_employee_id(role: str, conn: Connection) -> str:
-    """Generate the next employee ID based on role and existing users"""
+def get_next_employee_id(role: str, conn=None) -> str:
+    """Get the next employee ID from database (deprecated - use database function)"""
+    # This function is now deprecated - the database handles ID generation
+    # Keeping for backward compatibility but it should use the database function
+    try:
+        # Use database function for consistent ID generation
+        db_conn = db_service.get_connection()
+        with db_conn.cursor() as cursor:
+            cursor.execute("SELECT get_next_employee_id(%s)", (role,))
+            result = cursor.fetchone()
+            return result[0] if result else f"{role.upper()}_01"
+    except Exception as e:
+        print(f"Error getting next employee ID: {e}")
+        # Fallback to simple generation
     role_prefixes = {
         "admin": "ADMIN_",
         "operator": "OP_",
         "personnel": "PER_"
     }
-    
     prefix = role_prefixes.get(role, "USER_")
-    
-    # Get all existing employee numbers for this role
-    conn.search(
-        search_base=LDAP_BASE_DN,
-        search_filter="(objectClass=inetOrgPerson)",
-        attributes=["employeeNumber", "employeeType"]
-    )
-    
-    existing_numbers = []
-    for entry in conn.entries:
-        if (hasattr(entry, 'employeeType') and 
-            hasattr(entry, 'employeeNumber') and 
-            entry.employeeType.value == role):
-            emp_num = entry.employeeNumber.value
-            if emp_num and emp_num.startswith(prefix):
-                try:
-                    num_part = int(emp_num.replace(prefix, ""))
-                    existing_numbers.append(num_part)
-                except ValueError:
-                    continue
-    
-    # Find the next available number
-    next_num = 1
-    while next_num in existing_numbers:
-        next_num += 1
-    
-    return f"{prefix}{next_num:02d}"
+        return f"{prefix}01"
 
 class User(BaseModel):
     username: str
@@ -343,7 +444,7 @@ def login(username: str = Form(...), password: str = Form(...)):
                     detail=f"Invalid password. {remaining_attempts} attempts remaining before account lockout."
                 )
         
-        # Successful login - reset failed attempts
+        # Successful login - reset failed attempts and record success
         reset_failed_attempts(username)
         
         conn.search(
@@ -355,6 +456,14 @@ def login(username: str = Form(...), password: str = Form(...)):
             raise HTTPException(status_code=404, detail="User not found in LDAP after bind")
         entry = conn.entries[0]
         role = entry.employeeType.value if "employeeType" in entry else "user"
+        
+        # Record successful login in database
+        try:
+            db_service.record_login_attempt(username, 'success')
+            # Upsert user in database for metadata tracking with correct role
+            db_service.upsert_user(username, user_dn, role)
+        except Exception as e:
+            print(f"Error recording successful login: {e}")
         
         # Generate both access and refresh tokens
         access_token = generate_access_token(username, role)
@@ -518,26 +627,54 @@ def get_account_status(username: str, payload: dict = Depends(require_admin)):
 @app.post("/admin/unlock-account")
 def unlock_account(username: str = Form(...), payload: dict = Depends(require_admin)):
     """Manually unlock a locked account"""
+    admin_username = payload.get("sub")
     reset_failed_attempts(username)
+    
+    # Record admin action
+    try:
+        db_service.record_admin_action(admin_username, 'unlock_account', username)
+    except Exception as e:
+        print(f"Error recording admin action: {e}")
+    
     return {"message": f"Account {username} has been unlocked and failed attempts reset"}
 
 @app.get("/admin/refresh-tokens")
 def list_refresh_tokens(payload: dict = Depends(require_admin)):
     """List all active refresh tokens (admin only)"""
-    active_tokens = []
-    now = datetime.utcnow()
-    
-    for token_id, token_data in refresh_tokens.items():
-        if token_data["is_active"] and now <= token_data["expires_at"]:
-            active_tokens.append({
-                "token_id": token_id,
-                "username": token_data["username"],
-                "created_at": token_data["created_at"].isoformat(),
-                "expires_at": token_data["expires_at"].isoformat(),
-                "days_remaining": (token_data["expires_at"] - now).days
+    try:
+        # Get active tokens from database
+        active_tokens = db_service.get_active_refresh_tokens()
+        
+        # Format tokens for response
+        formatted_tokens = []
+        now = datetime.utcnow()
+        for token in active_tokens:
+            formatted_tokens.append({
+                "token_id": token['token_id'],
+                "username": token['username'],
+                "created_at": token['created_at'].isoformat(),
+                "expires_at": token['expires_at'].isoformat(),
+                "days_remaining": (token['expires_at'] - now).days
             })
-    
-    return {"active_refresh_tokens": active_tokens, "total": len(active_tokens)}
+        
+        return {"active_refresh_tokens": formatted_tokens, "total": len(formatted_tokens)}
+    except Exception as e:
+        print(f"Error getting refresh tokens from database: {e}")
+        # Fallback to in-memory tokens
+        active_tokens = []
+        now = datetime.utcnow()
+        
+        for token_id, token_data in refresh_tokens.items():
+            if token_data["is_active"] and now <= token_data["expires_at"]:
+                active_tokens.append({
+                    "token_id": token_id,
+                    "username": token_data["username"],
+                    "created_at": token_data["created_at"].isoformat(),
+                    "expires_at": token_data["expires_at"].isoformat(),
+                    "days_remaining": (token_data["expires_at"] - now).days
+                })
+        
+        return {"active_refresh_tokens": active_tokens, "total": len(active_tokens)}
 
 @app.post("/verify-token")
 def verify_token(token: str = Form(...)):
@@ -600,6 +737,56 @@ def list_users(payload: dict = Depends(require_admin)):
         })
     return {"users": users}
 
+@app.get("/admin/users-db")
+def list_users_from_db(payload: dict = Depends(require_admin)):
+    """Get all users from database (includes both LDAP and local users)"""
+    try:
+        users = db_service.get_all_users()
+        return {"users": users}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get users from database: {str(e)}")
+
+@app.post("/admin/sync-ldap-users")
+def sync_ldap_users_to_database(payload: dict = Depends(require_admin)):
+    """Sync all LDAP users to database permanently"""
+    try:
+        server = Server(LDAP_SERVER, get_info=ALL)
+        conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+        conn.search(
+            search_base=LDAP_BASE_DN,
+            search_filter="(objectClass=inetOrgPerson)",
+            attributes=["uid", "cn", "mail", "employeeType", "employeeNumber", "description"]
+        )
+        
+        ldap_users = []
+        for entry in conn.entries:
+            # Parse authorization level from description field
+            auth_level = 1  # Default level
+            if "description" in entry and entry.description.value:
+                desc = entry.description.value
+                if desc.startswith("auth_level:"):
+                    try:
+                        auth_level = int(desc.split(":")[1])
+                    except (ValueError, IndexError):
+                        auth_level = 1
+            
+            ldap_users.append({
+                "uid": entry.uid.value,
+                "dn": str(entry.entry_dn),
+                "cn": entry.cn.value,
+                "mail": entry.mail.value if "mail" in entry else None,
+                "role": entry.employeeType.value if "employeeType" in entry else "user",
+                "employee_id": entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None,
+                "authorization_level": auth_level
+            })
+        
+        # Sync to database
+        db_service.sync_ldap_users_to_db(ldap_users)
+        
+        return {"message": f"Successfully synced {len(ldap_users)} LDAP users to database", "users_synced": len(ldap_users)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to sync LDAP users: {str(e)}")
+
 @app.post("/admin/reset-password")
 def reset_password(username: str = Form(...), new_password: str = Form(...), payload: dict = Depends(require_admin)):
     user_dn = f"uid={username},{LDAP_BASE_DN}"
@@ -612,13 +799,141 @@ def reset_password(username: str = Form(...), new_password: str = Form(...), pay
 
 @app.post("/admin/change-role")
 def change_role(username: str = Form(...), new_role: str = Form(...), payload: dict = Depends(require_admin)):
+    """Change user role in both LDAP and database"""
+    try:
+        print(f"Starting role change for {username} from current role to {new_role}")
+        
+        # Update LDAP
     user_dn = f"uid={username},{LDAP_BASE_DN}"
     server = Server(LDAP_SERVER, get_info=ALL)
     conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
     success = conn.modify(user_dn, {"employeeType": [(MODIFY_REPLACE, [new_role])]})
     if not success:
-        raise HTTPException(status_code=400, detail="Failed to change role")
-    return {"message": f"Role changed for {username} to {new_role}"}
+            raise HTTPException(status_code=400, detail="Failed to change role in LDAP")
+        
+        # Update database
+        db_conn = db_service.get_connection()
+        with db_conn.cursor() as cursor:
+            # Get current user info
+            cursor.execute("SELECT role, authorization_level, employee_id FROM users WHERE username = %s", (username,))
+            user = cursor.fetchone()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found in database")
+            
+            current_role, auth_level, employee_id = user
+            print(f"Current role: {current_role}, New role: {new_role}")
+            
+            # If the role is the same, just update the employee_id and return
+            if current_role == new_role:
+                print(f"Role is the same ({current_role}), updating employee_id only")
+                # Generate new employee ID for the same role
+                cursor.execute("SELECT get_next_employee_id(%s)", (new_role,))
+                new_employee_id = cursor.fetchone()[0]
+                print(f"Generated new employee ID: {new_employee_id} for user {username}")
+                
+                # Update employee_id in users table
+                cursor.execute("UPDATE users SET employee_id = %s, updated_at = NOW() WHERE username = %s", (new_employee_id, username))
+                print(f"Updated employee_id in users table for {username}")
+                
+                # Update employee_id in the role table
+                if new_role == 'operator':
+                    cursor.execute("UPDATE operators SET employee_id = %s, updated_at = NOW() WHERE username = %s", (new_employee_id, username))
+                elif new_role == 'personnel':
+                    cursor.execute("UPDATE personnel SET employee_id = %s, updated_at = NOW() WHERE username = %s", (new_employee_id, username))
+                
+                db_conn.commit()
+                return {"message": f"Employee ID updated for {username} in {new_role} role"}
+            
+            # Update user role in database
+            cursor.execute("UPDATE users SET role = %s, updated_at = NOW() WHERE username = %s", (new_role, username))
+            print(f"Updated role in users table for {username}")
+            
+            # Remove from old role table
+            if current_role == 'operator':
+                cursor.execute("DELETE FROM operators WHERE username = %s", (username,))
+                print(f"Removed {username} from operators table")
+            elif current_role == 'personnel':
+                cursor.execute("DELETE FROM personnel WHERE username = %s", (username,))
+                print(f"Removed {username} from personnel table")
+            
+            # Generate new employee ID for the new role
+            cursor.execute("SELECT get_next_employee_id(%s)", (new_role,))
+            new_employee_id = cursor.fetchone()[0]
+            print(f"Generated new employee ID: {new_employee_id} for user {username}")
+            
+            # Update employee_id in users table
+            cursor.execute("UPDATE users SET employee_id = %s WHERE username = %s", (new_employee_id, username))
+            print(f"Updated employee_id in users table for {username}")
+            
+            # Add to new role table with gap-filling
+            if new_role == 'operator':
+                # Find next available ID for operators table
+                cursor.execute("""
+                    SELECT COALESCE(
+                        (SELECT MIN(t.id + 1) 
+                         FROM (SELECT id FROM operators ORDER BY id) t 
+                         WHERE NOT EXISTS (
+                             SELECT 1 FROM operators o WHERE o.id = t.id + 1
+                         )
+                        ), 
+                        (SELECT COALESCE(MAX(id), 0) + 1 FROM operators)
+                    ) as next_id
+                """)
+                next_id = cursor.fetchone()[0]
+                print(f"Next ID for operators table: {next_id}")
+                
+                cursor.execute("""
+                    INSERT INTO operators (id, username, employee_id, full_name, access_level)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE SET
+                        employee_id = EXCLUDED.employee_id,
+                        access_level = EXCLUDED.access_level,
+                        updated_at = NOW()
+                """, (next_id, username, new_employee_id, username, auth_level))
+                print(f"Inserted {username} into operators table")
+                
+                # Update the sequence
+                cursor.execute("SELECT setval('operators_id_seq', %s)", (next_id,))
+                
+            elif new_role == 'personnel':
+                # Find next available ID for personnel table
+                cursor.execute("""
+                    SELECT COALESCE(
+                        (SELECT MIN(t.id + 1) 
+                         FROM (SELECT id FROM personnel ORDER BY id) t 
+                         WHERE NOT EXISTS (
+                             SELECT 1 FROM personnel p WHERE p.id = t.id + 1
+                         )
+                        ), 
+                        (SELECT COALESCE(MAX(id), 0) + 1 FROM personnel)
+                    ) as next_id
+                """)
+                next_id = cursor.fetchone()[0]
+                print(f"Next ID for personnel table: {next_id}")
+                
+                cursor.execute("""
+                    INSERT INTO personnel (id, username, employee_id, full_name, access_level)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE SET
+                        employee_id = EXCLUDED.employee_id,
+                        access_level = EXCLUDED.access_level,
+                        updated_at = NOW()
+                """, (next_id, username, new_employee_id, username, auth_level))
+                print(f"Inserted {username} into personnel table")
+                
+                # Update the sequence
+                cursor.execute("SELECT setval('personnel_id_seq', %s)", (next_id,))
+            
+            db_conn.commit()
+            print(f"Successfully changed role for {username} from {current_role} to {new_role}")
+        
+        return {"message": f"Role changed for {username} to {new_role} in both LDAP and database"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error changing role: {str(e)}")
 
 @app.post("/admin/change-authorization-level")
 def change_authorization_level(
@@ -626,10 +941,14 @@ def change_authorization_level(
     authorization_level: int = Form(...), 
     payload: dict = Depends(require_admin)
 ):
+    """Change user authorization level in both LDAP and database"""
+    try:
+        print(f"Starting auth level change for {username} to level {authorization_level}")
     # Validate authorization level
     if authorization_level < 1 or authorization_level > 5:
         raise HTTPException(status_code=400, detail="Authorization level must be between 1 and 5")
     
+        # Update LDAP
     user_dn = f"uid={username},{LDAP_BASE_DN}"
     server = Server(LDAP_SERVER, get_info=ALL)
     conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
@@ -639,9 +958,28 @@ def change_authorization_level(
     success = conn.modify(user_dn, {"description": [(MODIFY_REPLACE, [auth_level_desc])]})
     
     if not success:
-        raise HTTPException(status_code=400, detail="Failed to change authorization level")
-    
-    return {"message": f"Authorization level changed for {username} to level {authorization_level}"}
+            raise HTTPException(status_code=400, detail="Failed to change authorization level in LDAP")
+        
+        # Update database
+        db_conn = db_service.get_connection()
+        with db_conn.cursor() as cursor:
+            # Update authorization level in users table
+            cursor.execute("UPDATE users SET authorization_level = %s, updated_at = NOW() WHERE username = %s", (authorization_level, username))
+            
+            # Update authorization level in role-specific tables
+            cursor.execute("UPDATE operators SET access_level = %s, updated_at = NOW() WHERE username = %s", (authorization_level, username))
+            print(f"Updated operators table for {username} to level {authorization_level}")
+            cursor.execute("UPDATE personnel SET access_level = %s, updated_at = NOW() WHERE username = %s", (authorization_level, username))
+            print(f"Updated personnel table for {username} to level {authorization_level}")
+            
+            db_conn.commit()
+        
+        return {"message": f"Authorization level changed for {username} to level {authorization_level} in both LDAP and database"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error changing authorization level: {str(e)}")
 
 @app.get("/user/authorization-level/{username}")
 def get_user_authorization_level(username: str, request: Request):
@@ -762,6 +1100,7 @@ def create_user(
     role: str = Form(...),
     authorization_level: int = Form(None),  # Will be set based on role
     payload: dict = Depends(require_admin),
+    request: Request = None,
 ):
     # Set default authorization level based on role if not provided
     if authorization_level is None:
@@ -793,12 +1132,41 @@ def create_user(
                 "sn": name.split(" ")[-1] if " " in name else name,
                 "userPassword": password,
                 "employeeType": role,
-                "employeeNumber": employee_id,
                 "description": f"auth_level:{authorization_level}",
             },
         )
         if not conn.result["description"] == "success":
             raise Exception(conn.result["description"])
+        
+        # Sync the new user to database with persistent employee ID
+        try:
+            db_service.upsert_user(
+                username=username,
+                ldap_dn=user_dn,
+                role=role,
+                authorization_level=authorization_level,
+                employee_id=employee_id
+            )
+            print(f"Successfully synced user {username} to database with employee_id {employee_id}")
+            
+            # Record admin action
+            client_ip = request.client.host if request and request.client else None
+            db_service.record_admin_action(
+                admin_username=payload.get("sub"),  # Use "sub" from JWT payload
+                action_type="create_user",
+                target_username=username,
+                action_details={
+                    "role": role,
+                    "authorization_level": authorization_level,
+                    "employee_id": employee_id
+                },
+                ip_address=client_ip
+            )
+        except Exception as e:
+            print(f"Error: Failed to sync new user to database: {e}")
+            # Don't fail the entire operation, but log the error
+            # The user was created in LDAP successfully
+        
         return {"message": f"User {username} created with authorization level {authorization_level}"}
     except LDAPEntryAlreadyExistsResult:
         raise HTTPException(status_code=400, detail="User already exists")
@@ -809,6 +1177,7 @@ def create_user(
 def delete_user(
     username: str = Form(...),
     payload: dict = Depends(require_admin),
+    request: Request = None,
 ):
     user_dn = f"uid={username},{LDAP_BASE_DN}"
     server = Server(LDAP_SERVER, get_info=ALL)
@@ -816,6 +1185,23 @@ def delete_user(
     success = conn.delete(user_dn)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to delete user")
+    
+    # Remove user from database and related data
+    try:
+        db_service.remove_user_completely(username)
+        
+        # Record admin action
+        client_ip = request.client.host if request and request.client else None
+        db_service.record_admin_action(
+            admin_username=payload.get("sub"),  # Use "sub" from JWT payload
+            action_type="delete_user",
+            target_username=username,
+            action_details={"user_dn": user_dn},
+            ip_address=client_ip
+        )
+    except Exception as e:
+        print(f"Warning: Failed to remove user from database: {e}")
+    
     return {"message": f"User {username} deleted"}
 
 @app.get("/users/for-operator")
@@ -845,14 +1231,88 @@ def operator_count(request: Request):
     payload = get_jwt_payload(request)
     if payload.get("role") != "personnel":
         raise HTTPException(status_code=403, detail="Personnel access required")
-    server = Server(LDAP_SERVER, get_info=ALL)
-    conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
-    conn.search(
-        search_base=LDAP_BASE_DN,
-        search_filter="(&(objectClass=inetOrgPerson)(employeeType=operator))",
-        attributes=["uid"]
-    )
-    return {"operator_count": len(conn.entries)}
+    
+    # Get operator count from database
+    operators = db_service.get_operators()
+    return {"operator_count": len(operators)}
+
+@app.get("/admin/operators")
+def get_operators(payload: dict = Depends(require_admin)):
+    """Get all operators from database"""
+    try:
+        operators = db_service.get_operators()
+        return {"operators": operators}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get operators: {str(e)}")
+
+@app.get("/admin/personnel")
+def get_personnel(payload: dict = Depends(require_admin)):
+    """Get all personnel from database"""
+    try:
+        personnel = db_service.get_personnel()
+        return {"personnel": personnel}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get personnel: {str(e)}")
+
+@app.get("/admin/user/{employee_id}")
+def get_user_by_employee_id(employee_id: str, payload: dict = Depends(require_admin)):
+    """Get user by employee ID"""
+    try:
+        user = db_service.get_user_by_employee_id(employee_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"user": user}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get user: {str(e)}")
+
+@app.post("/admin/sync-user-to-tables")
+def sync_user_to_tables(username: str = Form(...), payload: dict = Depends(require_admin)):
+    """Manually sync a user to the appropriate role-specific table"""
+    try:
+        # Get user from database
+        conn = db_service.get_connection()
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT username, role, employee_id, authorization_level FROM users WHERE username = %s", (username,))
+            user = cursor.fetchone()
+            
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found in database")
+            
+            username, role, employee_id, auth_level = user
+            
+            # Generate employee ID if missing
+            if not employee_id:
+                cursor.execute("SELECT get_next_employee_id(%s)", (role,))
+                employee_id = cursor.fetchone()[0]
+                cursor.execute("UPDATE users SET employee_id = %s WHERE username = %s", (employee_id, username))
+            
+            # Add to appropriate table
+            if role == 'operator':
+                cursor.execute("""
+                    INSERT INTO operators (username, employee_id, full_name, access_level)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE SET
+                        employee_id = EXCLUDED.employee_id,
+                        access_level = EXCLUDED.access_level,
+                        updated_at = NOW()
+                """, (username, employee_id, username, auth_level))
+            elif role == 'personnel':
+                cursor.execute("""
+                    INSERT INTO personnel (username, employee_id, full_name, access_level)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (username) DO UPDATE SET
+                        employee_id = EXCLUDED.employee_id,
+                        access_level = EXCLUDED.access_level,
+                        updated_at = NOW()
+                """, (username, employee_id, username, auth_level))
+            
+            conn.commit()
+            return {"message": f"Successfully synced user {username} to {role} table with employee_id {employee_id}"}
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error syncing user: {e}")
 
 @app.get("/users/me")
 def get_my_info(request: Request):
@@ -924,12 +1384,40 @@ def create_user_with_validation(
                 "sn": name.split(" ")[-1] if " " in name else name,
                 "userPassword": password,
                 "employeeType": role,
-                "employeeNumber": employee_id,
                 "description": f"auth_level:{authorization_level}",
             },
         )
         if not conn.result["description"] == "success":
             raise Exception(conn.result["description"])
+        
+        # Sync the new user to database with persistent employee ID
+        try:
+            db_service.upsert_user(
+                username=username,
+                ldap_dn=user_dn,
+                role=role,
+                authorization_level=authorization_level,
+                employee_id=employee_id
+            )
+            print(f"Successfully synced user {username} to database with employee_id {employee_id}")
+            
+            # Record admin action
+            db_service.record_admin_action(
+                admin_username=payload.get("sub"),  # Use "sub" from JWT payload
+                action_type="create_user",
+                target_username=username,
+                action_details={
+                    "role": role,
+                    "authorization_level": authorization_level,
+                    "employee_id": employee_id
+                }
+            )
+            print(f"Successfully recorded admin action for user {username}")
+        except Exception as e:
+            print(f"Error: Failed to sync new user to database: {e}")
+            # Don't fail the entire operation, but log the error
+            # The user was created in LDAP successfully
+        
         return {"message": f"User {username} created successfully with authorization level {authorization_level}"}
     except LDAPEntryAlreadyExistsResult:
         raise HTTPException(status_code=400, detail="User already exists")

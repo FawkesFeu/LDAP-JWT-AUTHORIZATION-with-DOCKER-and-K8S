@@ -81,4 +81,22 @@ spec:
   - name: http
     port: 80
     targetPort: 80
-  type: ClusterIP 
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-nodeport
+  namespace: ldap-jwt-app
+  labels:
+    app: frontend-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: frontend
+  ports:
+  - name: http
+    port: 80
+    targetPort: 80
+    nodePort: 30080
+    protocol: TCP 

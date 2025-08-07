@@ -29,4 +29,9 @@ data:
   LDAP_ADMIN_DN: "cn=admin,dc=example,dc=com"
   
   # Frontend Configuration
-  REACT_APP_BACKEND_URL: "http://backend-service:8000" 
+  REACT_APP_BACKEND_URL: "http://192.168.155.119:30800"
+  
+  # Database Configuration
+  DB_HOST: "timescaledb-service"
+  DB_PORT: "5432"
+  DB_NAME: "auth_metadata" 

@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY main.py .
+COPY database_service.py .
+COPY apply_schema.py .
+COPY database_schema.sql .
 COPY .env* ./
 
 # Create non-root user

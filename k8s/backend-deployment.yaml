@@ -60,6 +60,24 @@ spec:
             sleep 5
           done
           echo "LDAP server is ready!"
+      - name: wait-for-database
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+        - |
+          echo "Waiting for TimescaleDB server..."
+          
+          # Wait for database service to be available
+          until nc -z timescaledb-service 5432; do
+            echo "Database service not ready yet..."
+            sleep 10
+          done
+          echo "Database service is reachable!"
+          
+          # Wait for database to be fully initialized
+          echo "Waiting for database to be fully ready..."
+          sleep 60
+          echo "TimescaleDB server is ready!"
 ---
 apiVersion: v1
 kind: Service

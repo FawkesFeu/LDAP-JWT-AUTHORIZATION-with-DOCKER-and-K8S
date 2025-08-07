@@ -1,0 +1,179 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: user-migration-job
+  namespace: ldap-jwt-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: migration
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+        - -c
+        - |
+          # Install required packages
+          pip install psycopg2-binary ldap3 python-dotenv
+          
+          # Create migration script
+          cat > /tmp/migrate_users.py << 'EOF'
+          #!/usr/bin/env python3
+          
+          import os
+          import psycopg2
+          from psycopg2.extras import RealDictCursor
+          from ldap3 import Server, Connection, ALL, MODIFY_REPLACE
+          
+          def get_db_connection():
+              return psycopg2.connect(
+                  host='timescaledb-service',
+                  port='5432',
+                  database='auth_metadata',
+                  user='postgres',
+                  password='auth_metadata_pass'
+              )
+          
+          def get_ldap_connection():
+              try:
+                  server = Server('ldap://ldap-service:389', get_info=ALL)
+                  return Connection(
+                      server, 
+                      'uid=admin,ou=users,dc=example,dc=com', 
+                      'admin123', 
+                      auto_bind=True
+                  )
+              except Exception as e:
+                  print(f"⚠️ LDAP connection failed: {e}")
+                  return None
+          
+          def generate_employee_id(role, existing_ids):
+              """Generate employee ID based on role and existing IDs"""
+              role_prefixes = {
+                  "admin": "ADMIN_",
+                  "operator": "OP_",
+                  "personnel": "PER_"
+              }
+              
+              prefix = role_prefixes.get(role, "USER_")
+              
+              # Find the next available number
+              next_num = 1
+              while f"{prefix}{next_num:02d}" in existing_ids:
+                  next_num += 1
+              
+              return f"{prefix}{next_num:02d}"
+          
+          def migrate_users_to_persistent_ids():
+              try:
+                  db_conn = get_db_connection()
+                  ldap_conn = get_ldap_connection()
+                  
+                  print("🔄 Starting migration to persistent employee IDs...")
+                  
+                  # First, check if employee_id column exists
+                  with db_conn.cursor() as cursor:
+                      cursor.execute("""
+                          SELECT column_name 
+                          FROM information_schema.columns 
+                          WHERE table_name = 'users' AND column_name = 'employee_id'
+                      """)
+                      if not cursor.fetchone():
+                          print("❌ employee_id column does not exist. Please apply the new schema first.")
+                          return
+                  
+                  # Get all users from database
+                  with db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                      cursor.execute("SELECT username, role FROM users WHERE employee_id IS NULL")
+                      users_without_ids = cursor.fetchall()
+                      
+                      print(f"Found {len(users_without_ids)} users without employee IDs")
+                      
+                      if not users_without_ids:
+                          print("✅ All users already have employee IDs")
+                          return
+                      
+                      # Get existing employee IDs to avoid conflicts
+                      cursor.execute("SELECT employee_id FROM users WHERE employee_id IS NOT NULL")
+                      existing_ids = [row['employee_id'] for row in cursor.fetchall()]
+                      
+                      for user in users_without_ids:
+                          username = user['username']
+                          role = user['role']
+                          
+                          # Try to get employee ID from LDAP if available
+                          ldap_employee_id = None
+                          if ldap_conn:
+                              try:
+                                  user_dn = f"uid={username},ou=users,dc=example,dc=com"
+                                  ldap_conn.search(
+                                      search_base=user_dn,
+                                      search_filter="(objectClass=inetOrgPerson)",
+                                      attributes=["employeeNumber"]
+                                  )
+                                  
+                                  if ldap_conn.entries:
+                                      entry = ldap_conn.entries[0]
+                                      ldap_employee_id = entry.employeeNumber.value if "employeeNumber" in entry else None
+                                      print(f"📋 Found LDAP employee_id {ldap_employee_id} for {username}")
+                              except Exception as e:
+                                  print(f"⚠️ Failed to get LDAP data for {username}: {e}")
+                          
+                          if ldap_employee_id and ldap_employee_id not in existing_ids:
+                              # Use LDAP employee ID
+                              cursor.execute(
+                                  "UPDATE users SET employee_id = %s WHERE username = %s",
+                                  (ldap_employee_id, username)
+                              )
+                              existing_ids.append(ldap_employee_id)
+                              print(f"✅ Updated {username} with employee_id {ldap_employee_id}")
+                          else:
+                              # Generate new employee ID
+                              new_employee_id = generate_employee_id(role, existing_ids)
+                              
+                              cursor.execute(
+                                  "UPDATE users SET employee_id = %s WHERE username = %s",
+                                  (new_employee_id, username)
+                              )
+                              existing_ids.append(new_employee_id)
+                              print(f"✅ Generated new employee_id {new_employee_id} for {username}")
+                              
+                              # Try to update LDAP if available
+                              if ldap_conn:
+                                  try:
+                                      user_dn = f"uid={username},ou=users,dc=example,dc=com"
+                                      ldap_conn.modify(
+                                          user_dn,
+                                          {"employeeNumber": [(MODIFY_REPLACE, [new_employee_id])]}
+                                      )
+                                      print(f"✅ Updated LDAP for {username} with employee_id {new_employee_id}")
+                                  except Exception as e:
+                                      print(f"⚠️ Failed to update LDAP for {username}: {e}")
+                      
+                      db_conn.commit()
+                      print(f"\\n🎉 Migration completed successfully!")
+                      print(f"✅ Updated {len(users_without_ids)} users with persistent employee IDs")
+                      
+              except Exception as e:
+                  print(f"❌ Migration failed: {e}")
+                  if 'db_conn' in locals():
+                      db_conn.rollback()
+                  raise
+              finally:
+                  if 'db_conn' in locals():
+                      db_conn.close()
+          
+          if __name__ == "__main__":
+              print("🚀 Starting User ID Migration")
+              print("=" * 40)
+              migrate_users_to_persistent_ids()
+              print("\\n🎉 Migration process completed!")
+          EOF
+          
+          # Run the migration
+          python3 /tmp/migrate_users.py
+        env:
+        - name: PGPASSWORD
+          value: "auth_metadata_pass"
+      restartPolicy: Never
+  backoffLimit: 3 

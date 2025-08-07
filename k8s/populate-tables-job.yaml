@@ -1,0 +1,121 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: populate-tables-job
+  namespace: ldap-jwt-app
+spec:
+  template:
+    spec:
+      containers:
+      - name: populate
+        image: python:3.11-slim
+        command: ["/bin/bash"]
+        args:
+        - -c
+        - |
+          # Install required packages
+          pip install psycopg2-binary
+          
+          # Create population script
+          cat > /tmp/populate_tables.py << 'EOF'
+          #!/usr/bin/env python3
+          
+          import psycopg2
+          from psycopg2.extras import RealDictCursor
+          
+          def get_db_connection():
+              return psycopg2.connect(
+                  host='timescaledb-service',
+                  port='5432',
+                  database='auth_metadata',
+                  user='postgres',
+                  password='auth_metadata_pass'
+              )
+          
+          def populate_separate_tables():
+              try:
+                  db_conn = get_db_connection()
+                  
+                  print("🔄 Populating separate tables...")
+                  
+                  # Check if tables exist
+                  with db_conn.cursor() as cursor:
+                      cursor.execute("""
+                          SELECT table_name 
+                          FROM information_schema.tables 
+                          WHERE table_schema = 'public' AND table_name IN ('operators', 'personnel')
+                      """)
+                      tables = [row[0] for row in cursor.fetchall()]
+                      
+                      if 'operators' not in tables or 'personnel' not in tables:
+                          print("❌ Separate tables do not exist. Please apply the new schema first.")
+                          return
+                  
+                  # Get all users with their roles
+                  with db_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                      cursor.execute("""
+                          SELECT username, role, employee_id, authorization_level 
+                          FROM users 
+                          WHERE employee_id IS NOT NULL
+                      """)
+                      all_users = cursor.fetchall()
+                      
+                      print(f"Found {len(all_users)} users to populate")
+                      
+                      for user in all_users:
+                          username = user['username']
+                          role = user['role']
+                          employee_id = user['employee_id']
+                          auth_level = user['authorization_level']
+                          
+                          if role == 'operator':
+                              # Add to operators table
+                              cursor.execute("""
+                                  INSERT INTO operators (username, employee_id, full_name, access_level)
+                                  VALUES (%s, %s, %s, %s)
+                                  ON CONFLICT (username) DO UPDATE SET
+                                      employee_id = EXCLUDED.employee_id,
+                                      access_level = EXCLUDED.access_level,
+                                      updated_at = NOW()
+                              """, (username, employee_id, username, auth_level))
+                              print(f"✅ Added {username} to operators table")
+                              
+                          elif role == 'personnel':
+                              # Add to personnel table
+                              cursor.execute("""
+                                  INSERT INTO personnel (username, employee_id, full_name, access_level)
+                                  VALUES (%s, %s, %s, %s)
+                                  ON CONFLICT (username) DO UPDATE SET
+                                      employee_id = EXCLUDED.employee_id,
+                                      access_level = EXCLUDED.access_level,
+                                      updated_at = NOW()
+                              """, (username, employee_id, username, auth_level))
+                              print(f"✅ Added {username} to personnel table")
+                      
+                      db_conn.commit()
+                      print(f"\\n🎉 Table population completed successfully!")
+                      print(f"✅ Populated separate tables for operators and personnel")
+                      
+              except Exception as e:
+                  print(f"❌ Table population failed: {e}")
+                  if 'db_conn' in locals():
+                      db_conn.rollback()
+                  raise
+              finally:
+                  if 'db_conn' in locals():
+                      db_conn.close()
+          
+          if __name__ == "__main__":
+              print("🚀 Starting Table Population")
+              print("=" * 40)
+              populate_separate_tables()
+              print("\\n🎉 Table population process completed!")
+          EOF
+          
+          # Run the population script
+          python3 /tmp/populate_tables.py
+        env:
+        - name: PGPASSWORD
+          value: "auth_metadata_pass"
+      restartPolicy: Never
+  backoffLimit: 3 
