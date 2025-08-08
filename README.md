@@ -66,6 +66,7 @@ cd LDAP-JWT-AUTHORAZATION-with-DOCKER-and-K8S
   - **PyJWT** for JWT token handling
   - **Cryptography** for encryption/decryption
   - **python-ldap3** for LDAP client operations
+  - **TimescaleDB/PostgreSQL** for metadata storage (login attempts, user metadata, sessions, lockouts, admin audit)
 
 - **Frontend**:
   - **React 19** with **Tailwind CSS**
@@ -84,14 +85,26 @@ cd LDAP-JWT-AUTHORAZATION-with-DOCKER-and-K8S
   - **Services** for networking (ClusterIP + NodePort)
   - **ConfigMaps** for configuration management
   - **Secrets** for sensitive data encryption
-  - **PersistentVolumes** for data persistence
+  - **PersistentVolumes** for data persistence (LDAP + TimescaleDB)
   - **HorizontalPodAutoscaler** for auto-scaling
   - **NetworkPolicies** for security isolation
 
+### **Database Components:**
+- StatefulSet `timescaledb-statefulset` exposes `timescaledb-service:5432`
+- Initialization via `k8s/timescaledb-init-configmap.yaml` (tables, indexes, functions)
+- DB credentials from `k8s/secrets.yaml` (DB_USER, DB_PASSWORD)
+- DB used by backend for:
+  - Recording login attempts and lockouts
+  - Persisting refresh tokens (`jwt_sessions`)
+  - Storing user metadata (role, authorization_level, persistent employee_id)
+  - Admin actions audit log (`admin_actions`)
+
 ### **Persistent Data Storage:**
-- **User data persists** across deployments in `C:\ldap-data`
-- **Configuration persists** in `C:\ldap-config`
-- **Manual storage class** prevents data loss during fresh deployments
+- PersistentVolumes use Docker Desktop host mounts (portable on Windows):
+  - `/run/desktop/mnt/host/c/ldap-data` (maps to `C:\\ldap-data` on the host)
+  - `/run/desktop/mnt/host/c/ldap-config` (maps to `C:\\ldap-config` on the host)
+- On Linux/macOS, update only the `hostPath.path` values in `k8s/persistent-volume.yaml` to directories you create on the node (e.g., `/srv/ldap-data`, `/srv/ldap-config`).
+- Manual storage class is set to retain data across fresh deployments.
 
 ## 🔧 Management Scripts
 
@@ -170,7 +183,8 @@ ipconfig | findstr IPv4
 ## 💾 Data Persistence
 
 ### **User Data Storage:**
-- **Location**: `C:\ldap-data` and `C:\ldap-config`
+- **LDAP**: `C:\\ldap-data` and `C:\\ldap-config` (Windows host) mapped via Docker Desktop to `/run/desktop/mnt/host/c/...`
+- **Database (TimescaleDB)**: PersistentVolumeClaim `timescaledb-data` within the cluster (no hostPath needed)
 - **Persistence**: Survives container restarts, deployments, and system reboots
 - **Backup**: Manual backup of these directories preserves all users
 
