@@ -106,6 +106,46 @@ def fix_sequence_gaps(cursor):
         import traceback
         traceback.print_exc()
 
+def compact_primary_keys(cursor):
+    """Densify primary key IDs to remove gaps for specific tables.
+    This resets IDs to 1..N order by current id and resets the related sequences.
+    Safe because other tables reference users by username, not id.
+    """
+    try:
+        print("🔄 Compacting primary key IDs for tables: users, operators, personnel...")
+        table_seq_pairs = [
+            ("users", "users_id_seq"),
+            ("operators", "operators_id_seq"),
+            ("personnel", "personnel_id_seq"),
+        ]
+
+        for table_name, seq_name in table_seq_pairs:
+            # Skip if table does not exist
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = %s
+                )
+            """, (table_name,))
+            exists = cursor.fetchone()[0]
+            if not exists:
+                continue
+
+            # If table is empty or already dense, this is effectively a no-op
+            cursor.execute(f"CREATE TEMP TABLE tmp_{table_name}_id_map AS SELECT id AS old_id, ROW_NUMBER() OVER (ORDER BY id) AS new_id FROM {table_name}")
+            cursor.execute(f"UPDATE {table_name} u SET id = -m.new_id FROM tmp_{table_name}_id_map m WHERE u.id = m.old_id")
+            cursor.execute(f"UPDATE {table_name} u SET id = m.new_id FROM tmp_{table_name}_id_map m WHERE u.id = -m.new_id")
+            cursor.execute(f"DROP TABLE tmp_{table_name}_id_map")
+
+            # Reset sequence to MAX(id)
+            cursor.execute(f"SELECT setval('{seq_name}', (SELECT COALESCE(MAX(id), 0) FROM {table_name}))")
+
+        print("✅ Primary key compaction complete")
+    except Exception as e:
+        print(f"⚠️ Warning compacting primary keys: {e}")
+        import traceback
+        traceback.print_exc()
+
 def apply_schema():
     """Apply the complete database schema"""
     try:
@@ -147,6 +187,8 @@ def apply_schema():
         # Update existing tables with missing columns
         with conn.cursor() as cursor:
             update_existing_tables(cursor)
+            # Densify primary keys to eliminate gaps and reset sequences
+            compact_primary_keys(cursor)
         
         print("🎉 Database schema applied successfully!")
         
@@ -212,7 +254,7 @@ def apply_schema():
                 print("✅ All expected functions exist")
             
             # Fix sequence gaps to ensure proper ID generation
-            # fix_sequence_gaps(cursor) # Moved to create_initial_data
+            fix_sequence_gaps(cursor)
         
         conn.close()
         return True

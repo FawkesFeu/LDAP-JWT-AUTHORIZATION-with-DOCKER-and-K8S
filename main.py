@@ -30,7 +30,7 @@ def sync_ldap_users_on_startup():
         conn.search(
             os.environ.get('LDAP_BASE_DN', 'ou=users,dc=example,dc=com'),
             '(objectClass=inetOrgPerson)',
-            attributes=['uid', 'cn', 'employeeType', 'description']
+            attributes=['uid', 'cn', 'employeeType', 'description', 'employeeNumber']
         )
         
         ldap_users = []
@@ -49,7 +49,8 @@ def sync_ldap_users_on_startup():
                 "dn": str(entry.entry_dn),
                 "cn": entry.cn.value,
                 "role": entry.employeeType.value if "employeeType" in entry else "user",
-                "authorization_level": auth_level
+                "authorization_level": auth_level,
+                "employee_id": entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None
             })
         
         if ldap_users:
@@ -499,6 +500,25 @@ def login(username: str = Form(...), password: str = Form(...)):
         except Exception as e:
             print(f"Error recording successful login: {e}")
         
+        # Ensure LDAP employeeNumber matches persistent DB employee_id
+        try:
+            db_conn = db_service.get_connection()
+            db_employee_id = None
+            if db_conn:
+                with db_conn.cursor() as cursor:
+                    cursor.execute("SELECT employee_id FROM users WHERE username = %s", (username,))
+                    res = cursor.fetchone()
+                    if res and res[0]:
+                        db_employee_id = res[0]
+            ldap_employee_num = entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None
+            if db_employee_id and db_employee_id != ldap_employee_num:
+                # Update LDAP to persist the DB employee_id
+                conn_admin = Connection(Server(LDAP_SERVER, get_info=ALL), user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+                conn_admin.modify(user_dn, {"employeeNumber": [(MODIFY_REPLACE, [db_employee_id])]})
+                print(f"✅ Synchronized LDAP employeeNumber for {username} to {db_employee_id}")
+        except Exception as sync_err:
+            print(f"⚠️ Could not synchronize LDAP employeeNumber for {username}: {sync_err}")
+
         # Generate both access and refresh tokens
         access_token = generate_access_token(username, role)
         refresh_token, refresh_token_id = generate_refresh_token(username)
@@ -942,6 +962,14 @@ def change_role(username: str = Form(...), new_role: str = Form(...), payload: d
                 
                 db_conn.commit()
                 print(f"✅ Successfully committed database changes for {username}")
+
+                # Persist updated employee_id to LDAP so it remains across restarts
+                try:
+                    admin_conn = Connection(server, user=LDAP_ADMIN_DN, password=LDAP_ADMIN_PASS, auto_bind=True)
+                    admin_conn.modify(user_dn, {"employeeNumber": [(MODIFY_REPLACE, [new_employee_id])]})
+                    print(f"✅ Updated LDAP employeeNumber for {username} to {new_employee_id}")
+                except Exception as ldap_set_err:
+                    print(f"⚠️ Failed to update LDAP employeeNumber for {username}: {ldap_set_err}")
                 
                 # Record admin action
                 client_ip = request.client.host if request and request.client else None
@@ -1211,6 +1239,13 @@ def create_user(
             )
             
             print(f"✅ Successfully synced user {username} to database with employee_id {employee_id}")
+
+            # Persist employee_id to LDAP so it remains across restarts
+            try:
+                conn.modify(user_dn, {"employeeNumber": [(MODIFY_REPLACE, [employee_id])]})
+                print(f"✅ Set LDAP employeeNumber for {username} to {employee_id}")
+            except Exception as ldap_set_err:
+                print(f"⚠️ Failed to set LDAP employeeNumber for {username}: {ldap_set_err}")
             
             # Record admin action
             db_service.record_admin_action(
@@ -1421,11 +1456,26 @@ def get_my_info(request: Request):
     if not conn.entries:
         raise HTTPException(status_code=404, detail="User not found")
     entry = conn.entries[0]
+    # Prefer employee_id from database; fall back to LDAP employeeNumber
+    employee_id = None
+    try:
+        db_conn = db_service.get_connection()
+        if db_conn:
+            with db_conn.cursor() as cursor:
+                cursor.execute("SELECT employee_id FROM users WHERE username = %s", (payload['sub'],))
+                result = cursor.fetchone()
+                if result and result[0]:
+                    employee_id = result[0]
+    except Exception as e:
+        print(f"DEBUG: Could not fetch employee_id from DB for {payload['sub']}: {e}")
+    if not employee_id:
+        employee_id = entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None
+
     return {
         "uid": entry.uid.value,
         "cn": entry.cn.value,
         "role": entry.employeeType.value if "employeeType" in entry else None,
-        "employee_id": entry.employeeNumber.value if hasattr(entry, 'employeeNumber') else None
+        "employee_id": employee_id
     }
 
 @app.post("/admin/create-user-with-validation")
@@ -1522,6 +1572,13 @@ def create_user_with_validation(
             )
             
             print(f"✅ Successfully synced user {username} to database with employee_id {employee_id}")
+
+            # Persist employee_id to LDAP so it remains across restarts
+            try:
+                conn.modify(user_dn, {"employeeNumber": [(MODIFY_REPLACE, [employee_id])]})
+                print(f"✅ Set LDAP employeeNumber for {username} to {employee_id}")
+            except Exception as ldap_set_err:
+                print(f"⚠️ Failed to set LDAP employeeNumber for {username}: {ldap_set_err}")
             
             # Record admin action
             db_service.record_admin_action(

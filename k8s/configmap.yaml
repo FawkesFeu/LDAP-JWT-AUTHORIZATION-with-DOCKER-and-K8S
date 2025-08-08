@@ -28,8 +28,8 @@ data:
   LDAP_BASE_DN: "ou=users,dc=example,dc=com"
   LDAP_ADMIN_DN: "cn=admin,dc=example,dc=com"
   
-  # Frontend Configuration
-  REACT_APP_BACKEND_URL: "http://192.168.155.119:30800"
+  # Frontend Configuration (used by frontend build/runtime; frontend also auto-detects)
+  REACT_APP_BACKEND_URL: "http://localhost:30800"
   
   # Database Configuration
   DB_HOST: "timescaledb-service"

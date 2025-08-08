@@ -292,23 +292,46 @@ class DatabaseService:
             conn.autocommit = False  # Start transaction
             
             with conn.cursor() as cursor:
-                # If no employee_id provided, generate one using database function
+                # Ensure employee_id remains stable: reuse existing if present; only generate if missing
                 if not employee_id:
                     try:
-                        cursor.execute("SELECT get_next_employee_id(%s)", (role,))
-                        result = cursor.fetchone()
-                        if result:
-                            employee_id = result[0]
-                            logger.info(f"Generated employee_id: {employee_id} for user {username}")
+                        cursor.execute("SELECT employee_id FROM users WHERE username = %s", (username,))
+                        existing = cursor.fetchone()
+                        if existing and existing[0]:
+                            employee_id = existing[0]
+                            logger.info(f"Reusing existing employee_id: {employee_id} for user {username}")
                         else:
-                            # Fallback if function doesn't work
-                            employee_id = f"{role.upper()}_01"
-                            logger.warning(f"Using fallback employee_id: {employee_id} for user {username}")
+                            try:
+                                cursor.execute("SELECT get_next_employee_id(%s)", (role,))
+                                result = cursor.fetchone()
+                                if result:
+                                    employee_id = result[0]
+                                    logger.info(f"Generated employee_id: {employee_id} for user {username}")
+                                else:
+                                    # Fallback if function doesn't work
+                                    employee_id = f"{role.upper()}_01"
+                                    logger.warning(f"Using fallback employee_id: {employee_id} for user {username}")
+                            except Exception as e:
+                                logger.error(f"Failed to generate employee_id: {e}")
+                                # Fallback employee_id
+                                employee_id = f"{role.upper()}_01"
+                                logger.info(f"Using fallback employee_id: {employee_id} for user {username}")
                     except Exception as e:
-                        logger.error(f"Failed to generate employee_id: {e}")
-                        # Fallback employee_id
-                        employee_id = f"{role.upper()}_01"
-                        logger.info(f"Using fallback employee_id: {employee_id} for user {username}")
+                        logger.error(f"Failed checking existing employee_id for {username}: {e}")
+                        # As a safe fallback, attempt generation
+                        try:
+                            cursor.execute("SELECT get_next_employee_id(%s)", (role,))
+                            result = cursor.fetchone()
+                            if result:
+                                employee_id = result[0]
+                                logger.info(f"Generated employee_id (fallback): {employee_id} for user {username}")
+                            else:
+                                employee_id = f"{role.upper()}_01"
+                                logger.warning(f"Using fallback employee_id: {employee_id} for user {username}")
+                        except Exception as gen_err:
+                            logger.error(f"Failed to generate employee_id in fallback: {gen_err}")
+                            employee_id = f"{role.upper()}_01"
+                            logger.info(f"Using fallback employee_id: {employee_id} for user {username}")
                 
                 # Insert or update user
                 cursor.execute("""
@@ -318,7 +341,8 @@ class DatabaseService:
                         ldap_dn = EXCLUDED.ldap_dn,
                         role = EXCLUDED.role,
                         authorization_level = EXCLUDED.authorization_level,
-                        employee_id = EXCLUDED.employee_id,
+                        -- Preserve existing employee_id if already set; otherwise take incoming
+                        employee_id = COALESCE(users.employee_id, EXCLUDED.employee_id),
                         updated_at = NOW()
                     RETURNING id
                 """, (username, ldap_dn, role, authorization_level, employee_id))
@@ -478,7 +502,7 @@ class DatabaseService:
             return {}
 
     def sync_ldap_users_to_db(self, ldap_users: List[Dict[str, Any]]):
-        """Sync LDAP users to database permanently"""
+        """Sync LDAP users to database permanently without overwriting existing employee_id"""
         try:
             conn = self.get_connection()
             if conn is None:
@@ -486,20 +510,27 @@ class DatabaseService:
                 return
             with conn.cursor() as cursor:
                 for user in ldap_users:
+                    # Preserve existing employee_id if present; use LDAP employee_id only when missing
+                    cursor.execute("SELECT employee_id FROM users WHERE username = %s", (user.get('uid'),))
+                    existing_emp = cursor.fetchone()
+                    effective_employee_id = existing_emp[0] if existing_emp and existing_emp[0] else user.get('employee_id')
+
                     cursor.execute("""
-                        INSERT INTO users (username, ldap_dn, role, authorization_level, is_active)
-                        VALUES (%s, %s, %s, %s, true)
+                        INSERT INTO users (username, ldap_dn, role, authorization_level, employee_id, is_active)
+                        VALUES (%s, %s, %s, %s, %s, true)
                         ON CONFLICT (username) DO UPDATE SET
                             ldap_dn = EXCLUDED.ldap_dn,
                             role = EXCLUDED.role,
                             authorization_level = EXCLUDED.authorization_level,
+                            employee_id = COALESCE(users.employee_id, EXCLUDED.employee_id),
                             is_active = true,
                             updated_at = NOW()
                     """, (
                         user.get('uid'),
                         user.get('dn'),
                         user.get('role', 'user'),
-                        user.get('authorization_level', 1)
+                        user.get('authorization_level', 1),
+                        effective_employee_id
                     ))
                 conn.commit()
                 logger.info(f"Synced {len(ldap_users)} LDAP users to database")
