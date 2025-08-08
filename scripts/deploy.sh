@@ -16,7 +16,7 @@ kubectl apply -f k8s/secrets.yaml
 kubectl apply -f k8s/ldap-configmap.yaml
 kubectl apply -f k8s/frontend-nginx-config.yaml
 
-echo "Creating Persistent Volumes..."
+echo "Creating Persistent Volumes (LDAP hostPath + DB PVC)..."
 kubectl apply -f k8s/persistent-volume.yaml
 
 echo "Deploying LDAP server..."
@@ -24,6 +24,23 @@ kubectl apply -f k8s/ldap-deployment.yaml
 
 echo "Waiting for LDAP server to be ready..."
 kubectl wait --for=condition=available --timeout=300s deployment/ldap-deployment -n ldap-jwt-app
+
+echo "Deploying TimescaleDB (database)..."
+kubectl apply -f k8s/timescaledb-init-configmap.yaml
+kubectl apply -f k8s/timescaledb-deployment.yaml
+
+echo "Waiting for TimescaleDB to be ready..."
+kubectl wait --for=condition=ready pod -l app=timescaledb -n ldap-jwt-app --timeout=300s
+
+echo "Initializing database schema..."
+kubectl apply -f k8s/database-init-job.yaml
+kubectl wait --for=condition=complete job/database-init-job -n ldap-jwt-app --timeout=300s
+
+echo "Migration and table population jobs..."
+kubectl apply -f k8s/migration-job.yaml
+kubectl wait --for=condition=complete job/user-migration-job -n ldap-jwt-app --timeout=300s
+kubectl apply -f k8s/populate-tables-job.yaml
+kubectl wait --for=condition=complete job/populate-tables-job -n ldap-jwt-app --timeout=300s
 
 echo "Deploying backend..."
 kubectl apply -f k8s/backend-deployment.yaml
